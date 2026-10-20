@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#E7DEB0" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#16150D" media="(prefers-color-scheme: dark)">
+<title>The Dread List</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%23C0281A'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<div class="wrap">
+  <header class="mast">
+    <div class="osd"><span class="rec"><i></i>Rec</span><span>SP &#9654; Play</span></div>
+    <h1>The Dread List</h1>
+    <p class="lede">55 horror films picked for someone who loved Backrooms, Late Night with the Devil, The Thing, REC and The Night Eats the World, and could do without torture gore. Where each one streams in the UK, the cheapest rental, IMDb and Rotten Tomatoes scores, and how gory it gets.</p>
+    <div class="osd"><span>UK streaming</span><span id="stamp">Checking…</span></div>
+  </header>
+
+  <div class="syncbar" id="syncbar">
+    <span class="dot" id="syncDot" aria-hidden="true"></span>
+    <span id="syncText">Ticks are saved in this browser only.</span>
+    <button type="button" class="link" id="syncOpen">Sync across devices</button>
+  </div>
+
+  <section class="section" aria-labelledby="route-h">
+    <h2 id="route-h">Watch the most for the least</h2>
+    <p class="sub">Stack services in this order. Each step adds only the films the steps above it don’t already cover. Tap a step to list its films.</p>
+    <ol class="ladder" id="ladder"></ol>
+  </section>
+
+  <section class="controls" id="controls" aria-label="Filters">
+    <div class="row"><span class="lab">Vibe</span><div class="chips" id="vibeChips" role="group" aria-label="Filter by vibe"></div></div>
+    <div class="row"><span class="lab">Where</span><div class="chips" id="whereChips" role="group" aria-label="Filter by where to watch"></div></div>
+    <div class="row toggles">
+      <label for="tPicks"><input type="checkbox" id="tPicks"> Start here only</label>
+      <label for="tGore"><input type="checkbox" id="tGore"> Hide high gore</label>
+      <label for="tSeen"><input type="checkbox" id="tSeen"> Hide seen</label>
+      <label for="sortSel">Sort
+        <select id="sortSel">
+          <option value="vibe">By vibe</option>
+          <option value="rt">Rotten Tomatoes</option>
+          <option value="imdb">IMDb</option>
+          <option value="new">Newest</option>
+          <option value="mine">Your score</option>
+        </select>
+      </label>
+    </div>
+    <p class="count" id="count" aria-live="polite"></p>
+  </section>
+
+  <p class="legend">
+    <span class="gore g-L">Low</span><span>barely any</span>
+    <span class="gore g-M">Medium</span><span>The Thing or REC-level bursts</span>
+    <span class="gore g-H">High</span><span>the closest this list gets to what you dislike</span>
+  </p>
+
+  <div id="list"><p class="empty">Loading the list…</p></div>
+
+  <section class="section skip" aria-labelledby="skip-h">
+    <h2 id="skip-h">Probably skip these</h2>
+    <ul>
+      <li><b>Bone Tomahawk (2015).</b> Mostly a slow-burn western, then one infamously brutal scene that’s pure Hostel territory.</li>
+      <li><b>Terrifier 1–3.</b> Gore showcases first, films second.</li>
+      <li><b>The Sadness (2021).</b> An outbreak film built around sadistic violence.</li>
+      <li><b>When Evil Lurks (2023).</b> Superb, but relentlessly cruel, including to kids and animals.</li>
+      <li><b>Bring Her Back (2025).</b> Brilliant and genuinely nasty. The most uncomfortable horror of last year.</li>
+      <li><b>Infested (2023).</b> Great reviews, but it’s wall-to-wall spiders.</li>
+    </ul>
+  </section>
+
+  <footer class="note">
+    <p>Where to watch, rent prices and scores come from JustWatch UK and refresh automatically every morning. Tap any title for its live JustWatch listing.</p>
+    <p>Rent prices are the cheapest UK store at the last check. BBC iPlayer needs a TV licence. Lionsgate+, Studiocanal Presents and Sony Pictures Core are Prime Video channels that cost extra on top of Prime.</p>
+  </footer>
+</div>
+
+<dialog id="syncDialog" aria-labelledby="sync-h">
+  <div class="dlg">
+    <h2 id="sync-h">Sync across devices</h2>
+    <p>Your ticks and scores are saved to a file in a private GitHub repository, so they follow you between your phone, laptop and PC. Paste a fine-grained token that has <b>Contents: read and write</b> on that repository. The token stays in this browser and is only ever sent to api.github.com.</p>
+    <label for="sTok">Token</label>
+    <input id="sTok" type="password" autocomplete="off" spellcheck="false" placeholder="github_pat_…">
+    <label for="sRepo">Repository</label>
+    <input id="sRepo" type="text" autocomplete="off" spellcheck="false" placeholder="owner/private-repo">
+    <label for="sPath">File</label>
+    <input id="sPath" type="text" autocomplete="off" spellcheck="false" value="dread-list.json">
+    <p class="hint">Firefox set to clear site data on close will forget the token. Add an exception for this site under Settings, Privacy &amp; Security, Cookies and Site Data, Manage Exceptions.</p>
+    <p class="err" id="sErr" hidden></p>
+    <div class="btns">
+      <button type="button" class="btn ghost" id="sCancel">Cancel</button>
+      <button type="button" class="btn ghost" id="sOff">Turn off sync</button>
+      <button type="button" class="btn" id="sSave">Save and sync</button>
+    </div>
+  </div>
+</dialog>
+</body>
+</html>
