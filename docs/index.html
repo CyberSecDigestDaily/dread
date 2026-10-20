@@ -34,6 +34,7 @@
 </header>
 
 <main id="main">
+  <div class="syncnote" id="syncNote" role="region" aria-label="Sync" hidden></div>
   <p class="boot" id="boot">Loading the pool…</p>
 
   <section id="view-for" class="view" hidden aria-label="For you">
@@ -65,11 +66,16 @@
 </footer>
 
 <dialog id="settings" aria-labelledby="set-h">
-  <form method="dialog" class="dlg" id="setForm">
+  <div class="dlg">
     <div class="dlg-head">
       <h2 id="set-h">Settings</h2>
-      <button type="submit" class="x" aria-label="Close settings">Close</button>
+      <button type="button" class="x" id="closeSettings" aria-label="Close settings">Close</button>
     </div>
+
+    <section class="fs" aria-labelledby="sync-h">
+      <h3 id="sync-h">Sync across devices</h3>
+      <div id="syncBox"></div>
+    </section>
 
     <fieldset>
       <legend>Services you pay for</legend>
@@ -93,28 +99,6 @@
     </fieldset>
 
     <fieldset>
-      <legend>Sync across devices</legend>
-      <p class="hint" id="syncText">Ratings are saved in this browser only.</p>
-      <div id="moneyBox" hidden>
-        <button type="button" class="btn" id="useMoney">Use the Money Plan connection</button>
-        <p class="hint">Saves to dread-list.json in your private money-plan-data repo with the token this browser already holds for Money Plan.</p>
-      </div>
-      <details id="syncManual">
-        <summary>Connect with a token</summary>
-        <label for="sTok">Fine-grained token with Contents: read and write</label>
-        <input id="sTok" type="password" autocomplete="off" spellcheck="false" placeholder="github_pat_…">
-        <label for="sRepo">Private repository</label>
-        <input id="sRepo" type="text" autocomplete="off" spellcheck="false" placeholder="owner/repo">
-        <label for="sPath">File</label>
-        <input id="sPath" type="text" autocomplete="off" spellcheck="false" value="dread-list.json">
-        <div class="btns"><button type="button" class="btn" id="sSave">Save and sync</button></div>
-      </details>
-      <p class="err" id="sErr" hidden></p>
-      <div class="btns"><button type="button" class="btn ghost" id="sOff" hidden>Turn off sync</button></div>
-      <p class="hint">Hardened Firefox that clears site data on close will forget the token: add an exception for cybersecdigestdaily.github.io under Settings, Privacy &amp; Security, Cookies and Site Data.</p>
-    </fieldset>
-
-    <fieldset>
       <legend>Your data</legend>
       <div class="btns left">
         <button type="button" class="btn ghost" id="exportBtn">Export ratings</button>
@@ -122,7 +106,7 @@
         <button type="button" class="btn ghost danger" id="resetBtn">Clear all ratings</button>
       </div>
     </fieldset>
-  </form>
+  </div>
 </dialog>
 
 <div class="toast" id="toast" role="status" aria-live="polite" hidden><span id="toastText"></span><button type="button" id="toastUndo">Undo</button></div>

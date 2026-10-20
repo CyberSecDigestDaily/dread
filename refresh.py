@@ -32,6 +32,9 @@ WIKIDATA = "https://query.wikidata.org/sparql"
 UA = "Mozilla/5.0 (X11; Linux x86_64) dread-list/2.0 (+https://github.com/CyberSecDigestDaily/dread)"
 TODAY = dt.date.today()
 NEW_DAYS = 14
+KEEP_DAYS = 120  # a discovered film stays this long after it was last discovered, so ratings never lose their film
+# Optional, opt-in taste summary written by the page (film ids only, no dates). Public, so no secret is needed.
+TASTE_URL = "https://raw.githubusercontent.com/CyberSecDigestDaily/dread-sync/main/state.json"
 
 CONTENT = """content(country: GB, language: "en") { title originalReleaseYear fullPath shortDescription runtime
   ageCertification posterUrl productionCountries genres { shortName } credits(role: DIRECTOR) { name }
@@ -473,6 +476,17 @@ def fetch_posters(films):
         return {jid for jid, ok in pool.map(get, films) if ok}
 
 
+def load_taste():
+    """The page's opt-in taste summary: {"loved": [ids], "liked": [...], "meh", "disliked", "want", "pass"}."""
+    try:
+        req = urllib.request.Request(TASTE_URL, headers={"user-agent": UA, "cache-control": "no-cache"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            taste = (json.load(resp) or {}).get("taste") or {}
+    except Exception:  # no sync repo yet, or sharing is off
+        return {}
+    return {k: [str(i) for i in v][:2000] for k, v in taste.items() if isinstance(v, list)}
+
+
 # ---------- Main ----------
 
 def main():
@@ -521,14 +535,36 @@ def main():
         pool.setdefault(jid, n)
         sets.setdefault(jid, set()).add("new")
     anchor_jids = {n["id"] for n in nodes.values()}
-    near, extra = similar(sorted(anchor_jids), full=True)
+
+    # Films you rated, wanted or passed (from the taste summary, if you share one) always stay, and films discovered
+    # in the last KEEP_DAYS days stay too, so the pool only grows with what's relevant.
+    taste = load_taste()
+    to_jid = lambda i: (prev.get(i) or {}).get("jid") or (i if i.startswith("tm") else None)
+    keep_ids = {to_jid(i) for ids in taste.values() for i in ids} - {None}
+    like_ids = [j for j in (to_jid(i) for k in ("loved", "liked", "want") for i in taste.get(k, [])) if j]
+    cutoff = (TODAY - dt.timedelta(days=KEEP_DAYS)).isoformat()
+    recent = {f["jid"] for f in prev.values()
+              if f.get("jid") and not f.get("cur") and not f.get("seed") and (f.get("ls") or TODAY.isoformat()) >= cutoff}
+    missing = sorted((keep_ids | recent) - set(pool) - anchor_jids)
+    if missing:
+        for jid, n in by_ids(missing).items():
+            pool.setdefault(jid, n)
+            sets.setdefault(jid, set()).add("kept")
+    for jid in keep_ids & set(pool):
+        sets.setdefault(jid, set()).add("taste")
+    log(f"Taste summary: {len(keep_ids)} films ({len(like_ids)} liked or wanted); {len(recent)} recent films carried over")
+
+    # Neighbours of every hand-picked, profile-rated and liked film pull in more of the same.
+    seeds = sorted(anchor_jids | set(like_ids[:250]))
+    near, extra = similar(seeds, full=True)
     for jid, n in extra.items():
         if any(g.get("shortName") == "hrr" for g in n["content"].get("genres") or []):
             pool.setdefault(jid, n)
             sets.setdefault(jid, set()).add("similar")
 
-    # 3. Quality bar for discovered films; anchors always stay.
-    kept = {jid: n for jid, n in pool.items() if jid not in anchor_jids and keep_discovered(n["content"], sets.get(jid, set()))}
+    # 3. Quality bar for discovered films; anchors, your films and recently kept films always stay.
+    kept = {jid: n for jid, n in pool.items() if jid not in anchor_jids and
+            (sets.get(jid, set()) & {"taste", "kept"} or keep_discovered(n["content"], sets.get(jid, set())))}
     log(f"Pool: {len(pool)} discovered, {len(kept)} kept after the quality bar")
 
     # 4. Similar-title edges for the kept pool (ids only).
@@ -542,7 +578,7 @@ def main():
     # JustWatch's horror filter lets some thrillers and dramas through: keep a discovered film only if JustWatch
     # or Wikidata actually calls it horror.
     def is_horror(n):
-        if any(g.get("shortName") == "hrr" for g in n["content"].get("genres") or []):
+        if any(g.get("shortName") == "hrr" for g in n["content"].get("genres") or []) or "taste" in sets.get(n["id"], set()):
             return True
         return "horror" in wd.get((n["content"].get("externalIds") or {}).get("imdbId") or "", "")
     dropped = [n["content"]["title"] for n in kept.values() if not is_horror(n)]
@@ -572,6 +608,8 @@ def main():
         if jid in id_of:
             continue
         r = record(n, wd=wd, prev=prev.get(jid))
+        fresh = sets.get(jid, set()) - {"kept", "taste"}
+        r["ls"] = TODAY.isoformat() if fresh else (prev.get(jid) or {}).get("ls") or TODAY.isoformat()
         films.append(r)
         id_of[jid] = r["id"]
     for f in films:

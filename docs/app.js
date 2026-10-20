@@ -17,7 +17,7 @@ const SVC = {
 };
 const OWNABLE = ["nf", "pv", "dp", "hbo", "nowe", "cr", "nowc", "sh", "pp", "mubi", "atv", "bfi"];
 const FREE_ORDER = ["bbc", "c4", "itvx", "my5", "tubi", "mx", "plex", "pluto", "ytf", "rakuten"];
-const DEFAULT_CFG = {svc: {nf: 1, pv: 1, dp: 1, hbo: 1, nowe: 1, cr: 1}, free: 1, hide: {}, theme: "auto", t: ""};
+const DEFAULT_CFG = {svc: {nf: 1, pv: 1, dp: 1, hbo: 1, nowe: 1, cr: 1}, free: 1, hide: {}, theme: "auto", share: 0, t: ""};
 const TAGS = {"found-footage": "Found footage", liminal: "Liminal", claustrophobic: "Claustrophobic", isolation: "Isolation",
   creature: "Creatures", "body-horror": "Body horror", paranoia: "Paranoia", outbreak: "Outbreaks", ghost: "Ghosts",
   possession: "Possession", occult: "Occult", folk: "Folk horror", cult: "Cults", religious: "Religious", witch: "Witches",
@@ -42,8 +42,7 @@ const REGION_LABEL = {"uk-ie": "British & Irish", us: "American", korea: "Korean
   france: "French", italy: "Italian", germany: "German-language", nordic: "Nordic", latam: "Latin American", canada: "Canadian",
   anz: "Australian & NZ", asia: "Other Asian", other: "Elsewhere"};
 const PAGE = 40, WILD_EVERY = 7, SOON_DAYS = 30, NEW_DAYS = 14;
-const KEY_STATE = "dread.state.v1", KEY_SYNC = "dread.sync.v1";
-const MONEY_KEY = "moneyplan.gh.token", MONEY_REPO = "CyberSecDigestDaily/money-plan-data", SYNC_FILE = "dread-list.json";
+const KEY_STATE = "dread.state.v1";
 
 /* ---------- Helpers ---------- */
 const $ = id => document.getElementById(id);
@@ -57,8 +56,7 @@ const runtime = m => m ? (m >= 60 ? `${Math.floor(m / 60)}h ${String(m % 60).pad
 const store = {
   get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* storage blocked */ } },
-  del(k) { try { localStorage.removeItem(k); } catch (e) { /* storage blocked */ } },
-  raw(k) { try { return localStorage.getItem(k) || sessionStorage.getItem(k); } catch (e) { return null; } }
+  del(k) { try { localStorage.removeItem(k); } catch (e) { /* storage blocked */ } }
 };
 const svcName = k => SVC[k] ? SVC[k].n : k.startsWith("ch:") ? k.slice(3) : k.startsWith("free:") ? k.slice(5) : k;
 const isFree = k => !!(SVC[k] && SVC[k].free) || k.startsWith("free:");
@@ -66,7 +64,6 @@ const isFree = k => !!(SVC[k] && SVC[k].free) || k.startsWith("free:");
 /* ---------- State ---------- */
 let FILMS = [], BY = new Map(), SEED = new Map(), NEIGH = new Map(), FEAT = new Map(), DATA_CHECKED = null;
 let state = normState(store.get(KEY_STATE));
-let sync = store.get(KEY_SYNC), remoteSha = null;
 let M = {aff: new Map(), cnt: new Map(), signals: 0};
 const ui = {view: "for", q: "", where: "all", gore: "any", len: "any", sort: "match", tag: null, shown: PAGE,
   open: new Set(), rating: new Set(), focus: null, ratedFilter: "all", roll: 0, wild: new Set()};
@@ -86,12 +83,13 @@ function normState(s) {
     if (e.w && !n.r) n.w = 1;
     if (e.x && !n.r) n.x = 1;
     if (e.src) n.src = String(e.src);
+    if (e.f && typeof e.f === "object" && e.f.t) n.f = e.f;
     out.films[id] = n;
   }
   if (s.cfg && typeof s.cfg === "object") {
     const c = defaultCfg();
     out.cfg = {svc: Object.assign({}, s.cfg.svc || c.svc), free: s.cfg.free === 0 ? 0 : 1, hide: Object.assign({}, s.cfg.hide || {}),
-      theme: ["auto", "dark", "light"].includes(s.cfg.theme) ? s.cfg.theme : "auto", t: String(s.cfg.t || "")};
+      theme: ["auto", "dark", "light"].includes(s.cfg.theme) ? s.cfg.theme : "auto", share: s.cfg.share === 1 ? 1 : 0, t: String(s.cfg.t || "")};
   }
   return out;
 }
@@ -103,9 +101,18 @@ function eff(id) {
   return s ? {r: s, seen: 1, src: "profile"} : EMPTY;
 }
 const sig = e => e.r ? RATE[e.r] : e.x ? SIG_PASS : e.w ? SIG_WANT : null;
+/* A compact copy of a film travels with your rating, so it keeps teaching the model (and stays in Rated) even after
+   the film drops out of the daily pool. */
+const SNAP_KEYS = ["t", "y", "jid", "px", "tg", "ta", "dir", "co", "g", "ge", "fl", "rn", "im", "rt", "imdb", "jw"];
+function snap(f) {
+  const s = {};
+  if (f) SNAP_KEYS.forEach(k => { if (f[k] !== undefined && f[k] !== null && !(Array.isArray(f[k]) && !f[k].length)) s[k] = f[k]; });
+  return s;
+}
 function setEntry(id, entry, label) {
   undo.push({id, prev: state.films[id] ? Object.assign({}, state.films[id]) : null});
   if (undo.length > 30) undo.shift();
+  if (entry.r || entry.w || entry.x) entry.f = (state.films[id] && state.films[id].f) || snap(BY.get(id));
   state.films[id] = Object.assign({t: nowISO()}, entry);
   saveLocal();
   queuePush();
@@ -136,6 +143,17 @@ function prepare(data) {
   FILMS.forEach(f => (f.sim || []).forEach(j => { link(f.id, j); link(j, f.id); }));
   FEAT = new Map(FILMS.map(f => [f.id, features(f)]));
   DATA_CHECKED = data.checked ? new Date(data.checked) : null;
+  adoptGone();
+}
+/* Films you rated, wanted or passed that are no longer in today's pool come back from the copy saved with the rating. */
+function adoptGone() {
+  for (const [id, e] of Object.entries(state.films)) {
+    if (!e.f || BY.has(id)) continue;
+    const f = Object.assign({id, gone: 1, o: []}, e.f);
+    FILMS.push(f);
+    BY.set(id, f);
+    FEAT.set(id, features(f));
+  }
 }
 function era(y) { return y >= 2020 ? "2020s" : y >= 2010 ? "2010s" : y >= 2000 ? "2000s" : y >= 1990 ? "1990s" : y >= 1980 ? "1980s" : "pre-1980"; }
 function features(f) {
@@ -244,7 +262,7 @@ function avail(f) {
 const jwLink = f => f.jw ? "https://www.justwatch.com" + f.jw : "https://www.justwatch.com/uk/search?q=" + encodeURIComponent(f.t);
 
 /* ---------- Filtering and ranking ---------- */
-const isCandidate = f => { const e = eff(f.id); return !e.r && !e.seen && !e.x; };
+const isCandidate = f => { const e = eff(f.id); return !e.r && !e.seen && !e.x && !f.gone; };
 const hiddenByFlags = f => (f.fl || []).some(x => cfg.hide[x]);
 function hasFeature(f, key) { return FEAT.get(f.id).some(([k]) => k === key); }
 function matchesQuery(f, q) {
@@ -313,6 +331,7 @@ function posterHTML(f, cls, w, h) {
 }
 function matchClass(m) { return m >= 85 ? "hot" : m < 50 ? "cool" : ""; }
 function watchHTML(f, a) {
+  if (f.gone) return `<a class="watch other" href="${esc(jwLink(f))}" target="_blank" rel="noopener noreferrer">Check JustWatch</a>`;
   if (a.own.length) { const o = a.own[0]; return `<a class="watch mine" href="${esc(o[1] || jwLink(f))}" target="_blank" rel="noopener noreferrer">Watch on ${esc(svcName(o[0]))}</a>`; }
   if (a.free.length) { const o = a.free[0]; return `<a class="watch free" href="${esc(o[1] || jwLink(f))}" target="_blank" rel="noopener noreferrer">Free on ${esc(svcName(o[0]))}</a>`; }
   const sub = a.other.find(o => !isFree(o[0]));
@@ -568,6 +587,7 @@ function counts() {
   $("nRated").textContent = r ? r : "";
 }
 function refresh(opts) {
+  if (FILMS.length) adoptGone();
   learn();
   scoreAll();
   counts();
@@ -643,6 +663,11 @@ function jump(id, open) {
 /* ---------- Events ---------- */
 function wire() {
   window.addEventListener("hashchange", route);
+  // A poster that fails to load (e.g. a film that has left the pool) becomes a blank tile instead of a broken image.
+  document.addEventListener("error", e => {
+    const t = e.target;
+    if (t && t.tagName === "IMG" && !t.dataset.dead) { t.dataset.dead = "1"; t.removeAttribute("src"); t.classList.add("blank"); }
+  }, true);
   document.addEventListener("click", e => {
     const b = e.target.closest("[data-act], [data-set], [data-theme-set]");
     if (!b) return;
@@ -730,30 +755,47 @@ function fillSettings() {
   $("flagChecks").innerHTML = Object.entries(FLAGS).map(([k, l]) => `<label class="check"><input type="checkbox" data-flag="${k}"${cfg.hide[k] ? " checked" : ""}> ${esc(l)}</label>`).join("");
   $("cfgFree").checked = !!cfg.free;
   document.querySelectorAll("[data-theme-set]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.themeSet === cfg.theme)));
-  const money = store.raw(MONEY_KEY);
-  $("moneyBox").hidden = !money || (sync && sync.token === money);
-  $("sOff").hidden = !sync;
-  if (sync) { $("sRepo").value = sync.repo; $("sPath").value = sync.path; }
+  const share = $("cfgShare");
+  if (share) share.checked = cfg.share === 1;
+  renderSync();
+}
+function openSettings(focusId) {
+  const d = $("settings");
+  fillSettings();
+  if (typeof d.showModal === "function") { if (!d.open) d.showModal(); } else d.setAttribute("open", "");
+  const focus = () => { const el = focusId && $(focusId); if (el) el.focus(); };
+  setTimeout(focus, 30);
+  if (!sync) checkVault(true).then(() => { renderSync(); setTimeout(focus, 30); });
 }
 function wireSettings() {
   const d = $("settings");
-  $("openSettings").addEventListener("click", () => { fillSettings(); $("sErr").hidden = true; if (typeof d.showModal === "function") d.showModal(); else d.setAttribute("open", ""); });
+  $("openSettings").addEventListener("click", () => openSettings());
+  $("closeSettings").addEventListener("click", () => { if (typeof d.close === "function") d.close(); else d.removeAttribute("open"); });
   d.addEventListener("change", e => {
     const t = e.target;
     if (t.dataset.svc) setCfg({svc: Object.assign({}, cfg.svc, {[t.dataset.svc]: t.checked ? 1 : 0})});
     else if (t.dataset.flag) setCfg({hide: Object.assign({}, cfg.hide, {[t.dataset.flag]: t.checked ? 1 : 0})});
     else if (t.id === "cfgFree") setCfg({free: t.checked ? 1 : 0});
+    else if (t.id === "cfgShare") setCfg({share: t.checked ? 1 : 0});
     else if (t.id === "importFile" && t.files && t.files[0]) importFile(t.files[0]);
   });
-  d.addEventListener("keydown", e => { if (e.key === "Enter" && e.target.matches("input[type=text], input[type=password]")) { e.preventDefault(); $("sSave").click(); } });
-  $("useMoney").addEventListener("click", () => connect({token: store.raw(MONEY_KEY), repo: MONEY_REPO, path: SYNC_FILE}, $("useMoney")));
-  $("sSave").addEventListener("click", () => {
-    const token = $("sTok").value.trim() || (sync && sync.token) || "";
-    const repo = $("sRepo").value.trim().replace(/^https:\/\/github\.com\//, "").replace(/\/$/, ""), path = $("sPath").value.trim().replace(/^\//, "");
-    if (!token || !/^[\w.-]+\/[\w.-]+$/.test(repo) || !path) { showErr("Fill in a token, a repository as owner/name and a file name."); return; }
-    connect({token, repo, path}, $("sSave"));
+  d.addEventListener("submit", e => {
+    e.preventDefault();
+    const f = e.target;
+    if (f.id === "unlockForm") doUnlock(f);
+    else if (f.id === "setupForm") doSetup(f);
+    else if (f.id === "tokenForm") doReplaceToken(f);
   });
-  $("sOff").addEventListener("click", () => { sync = null; remoteSha = null; store.del(KEY_SYNC); setStatus(null, "Sync is off. Ratings are saved in this browser only."); fillSettings(); });
+  d.addEventListener("click", e => {
+    const b = e.target.closest("[data-sync]");
+    if (!b) return;
+    const a = b.dataset.sync;
+    if (a === "pair") showPair();
+    else if (a === "copy") copyPair(b);
+    else if (a === "now") pullAndMerge(true);
+    else if (a === "forget") forgetBrowser();
+    else if (a === "recheck") { b.textContent = "Checking…"; checkVault(true).then(() => renderSync(true)); }
+  });
   $("exportBtn").addEventListener("click", () => {
     const blob = new Blob([JSON.stringify(state, null, 1)], {type: "application/json"});
     const a = document.createElement("a");
@@ -777,49 +819,313 @@ function importFile(file) {
       state = merge(state, incoming); cfg = state.cfg;
       saveLocal(); queuePush(); applyTheme(); fillSettings(); refresh();
       toast(`Imported ${Object.keys(incoming.films).length} entries`);
-    } catch (e) { showErr("That file isn’t a Dread List export."); }
+    } catch (e) { syncErr("That file isn’t a Dread List export."); }
   };
   r.readAsText(file);
 }
-function showErr(text) { $("sErr").textContent = text; $("sErr").hidden = false; }
 
-/* ---------- Sync (GitHub contents API, private repo) ---------- */
-const b64enc = str => { const bytes = new TextEncoder().encode(str); let bin = ""; for (const b of bytes) bin += String.fromCharCode(b); return btoa(bin); };
-const b64dec = b64 => new TextDecoder().decode(Uint8Array.from(atob(String(b64).replace(/\s/g, "")), c => c.charCodeAt(0)));
+/* ---------- Sync: end-to-end encrypted in the public dread-sync repo ----------
+   vault.json holds the GitHub token encrypted with a key derived from your passphrase (PBKDF2-SHA256, 600,000 rounds,
+   AES-256-GCM). state.json holds your ratings and settings encrypted with the same key. Any browser that knows the
+   passphrase can unlock the token and sync. GitHub only ever stores ciphertext, plus an optional taste summary
+   (film ids, no dates) that the nightly rebuild and the weekly curator read. The token can only touch dread-sync. */
+const SYNC_OWNER = "CyberSecDigestDaily", SYNC_NAME = "dread-sync", SYNC_REPO = SYNC_OWNER + "/" + SYNC_NAME;
+const SYNC_API = "https://api.github.com/repos/" + SYNC_REPO;
+const KDF_ITER = 600000, CREDS = "dread.sync.v2", AAD_VAULT = "dread-vault-v1", AAD_STATE = "dread-state-v1";
+const NEW_REPO_URL = `https://github.com/new?owner=${SYNC_OWNER}&name=${SYNC_NAME}&visibility=public&description=${encodeURIComponent("Encrypted sync data for the Dread List")}`;
+const NEW_TOKEN_URL = `https://github.com/settings/personal-access-tokens/new?name=${encodeURIComponent("Dread List sync")}&description=${encodeURIComponent("Sync for cybersecdigestdaily.github.io/dread. Repository access: only dread-sync.")}&target_name=${SYNC_OWNER}&expires_in=366&contents=write`;
+let sync = null, syncKey = null, shaState = null, lastPull = 0, syncState = {kind: null, text: "Ratings are saved in this browser only."};
+let vaultInfo = {checked: false, repo: null, vault: null};
+
+const te = new TextEncoder(), td = new TextDecoder();
+const toB64 = bytes => { let s = ""; new Uint8Array(bytes).forEach(b => { s += String.fromCharCode(b); }); return btoa(s); };
+const fromB64 = s => Uint8Array.from(atob(String(s).replace(/\s/g, "")), c => c.charCodeAt(0));
+const b64enc = str => toB64(te.encode(str));
+const b64dec = s => td.decode(fromB64(s));
+const b64url = str => b64enc(str).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const unb64url = s => { const t = s.replace(/-/g, "+").replace(/_/g, "/"); return b64dec(t + "=".repeat((4 - t.length % 4) % 4)); };
 const timeNow = () => new Date().toLocaleTimeString("en-GB", {hour: "2-digit", minute: "2-digit"});
-function setStatus(kind, text) {
-  const dot = $("syncDot");
-  dot.className = "dot" + (kind ? " " + kind : "");
-  $("syncText").textContent = text;
-  $("openSettings").title = text;
+
+async function deriveKey(pass, salt, iter) {
+  const base = await crypto.subtle.importKey("raw", te.encode(pass.normalize("NFKC")), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({name: "PBKDF2", hash: "SHA-256", salt, iterations: iter}, base, {name: "AES-GCM", length: 256}, true, ["encrypt", "decrypt"]);
 }
-async function gh(conn, method, body) {
-  const path = conn.path.split("/").map(encodeURIComponent).join("/");
-  return fetch(`https://api.github.com/repos/${conn.repo}/contents/${path}`, {
-    method, cache: "no-store",
-    headers: Object.assign({"Accept": "application/vnd.github+json", "Authorization": "Bearer " + conn.token, "X-GitHub-Api-Version": "2022-11-28"},
-      body ? {"Content-Type": "application/json"} : {}),
-    body: body ? JSON.stringify(body) : undefined
+async function seal(key, text, aad) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({name: "AES-GCM", iv, additionalData: te.encode(aad)}, key, te.encode(text));
+  return {iv: toB64(iv), ct: toB64(ct)};
+}
+async function unseal(key, box, aad) {
+  return td.decode(await crypto.subtle.decrypt({name: "AES-GCM", iv: fromB64(box.iv), additionalData: te.encode(aad)}, key, fromB64(box.ct)));
+}
+const importRaw = b64 => crypto.subtle.importKey("raw", fromB64(b64), {name: "AES-GCM"}, true, ["encrypt", "decrypt"]);
+const exportRaw = async key => toB64(await crypto.subtle.exportKey("raw", key));
+
+function ghHeaders(token, json) {
+  return Object.assign({"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"},
+    token ? {"Authorization": "Bearer " + token} : {}, json ? {"Content-Type": "application/json"} : {});
+}
+function httpError(res) {
+  const e = new Error(res.status === 401 ? "GitHub rejected the token: it has expired or been revoked. Replace it under Sync in Settings."
+    : res.status === 403 ? "The token can’t write to dread-sync. It needs Contents: read and write on that repository."
+    : res.status === 404 ? "dread-sync wasn’t found, or the token can’t see it."
+    : `GitHub returned an error (${res.status}).`);
+  e.status = res.status;
+  return e;
+}
+async function ghFile(path, token) {
+  const res = await fetch(`${SYNC_API}/contents/${path}`, {cache: "no-store", headers: ghHeaders(token)});
+  if (res.status === 404) return null;
+  if (!res.ok) throw httpError(res);
+  const j = await res.json();
+  return {sha: j.sha, data: JSON.parse(b64dec(j.content))};
+}
+function ghWrite(path, token, data, sha, message) {
+  return fetch(`${SYNC_API}/contents/${path}`, {method: "PUT", headers: ghHeaders(token, true),
+    body: JSON.stringify(Object.assign({message, content: b64enc(JSON.stringify(data) + "\n")}, sha ? {sha} : {}))});
+}
+
+/* Credentials on this browser: localStorage when remembered, sessionStorage otherwise. */
+function loadCreds() {
+  for (const s of ["localStorage", "sessionStorage"]) {
+    try { const c = JSON.parse(window[s].getItem(CREDS)); if (c && c.token && c.key) return c; } catch (e) { /* blocked */ }
+  }
+  return null;
+}
+function credsRemembered() { try { return !!localStorage.getItem(CREDS); } catch (e) { return false; } }
+function dropCreds() { for (const s of ["localStorage", "sessionStorage"]) { try { window[s].removeItem(CREDS); } catch (e) { /* blocked */ } } }
+async function useCreds(c, remember) {
+  syncKey = await importRaw(c.key);
+  sync = {token: c.token, key: c.key};
+  dropCreds();
+  try { (remember ? localStorage : sessionStorage).setItem(CREDS, JSON.stringify(sync)); } catch (e) { /* storage blocked: synced for this page only */ }
+}
+
+function setStatus(kind, text) {
+  syncState = {kind, text};
+  $("syncDot").className = "dot" + (kind ? " " + kind : "");
+  $("openSettings").title = text;
+  const line = document.querySelector("#syncBox .sync-status");
+  if (line) line.innerHTML = statusHTML();
+  syncNote();
+}
+const statusHTML = () => `<span class="dot${syncState.kind ? " " + syncState.kind : ""}" aria-hidden="true"></span>${esc(syncState.text)}`;
+function syncErr(text) {
+  const e = $("sErr");
+  if (e) { e.textContent = text; e.hidden = false; } else toast(text);
+}
+function busy(form, on, label) {
+  const b = form.querySelector("button[type=submit]");
+  if (!b) return;
+  if (on) { b.dataset.label = b.textContent; b.textContent = label; b.disabled = true; const e = $("sErr"); if (e) e.hidden = true; }
+  else { b.disabled = false; if (b.dataset.label) b.textContent = b.dataset.label; }
+}
+
+async function checkVault(force) {
+  if (vaultInfo.checked && !force) return vaultInfo;
+  try {
+    const r = await fetch(SYNC_API, {cache: "no-store", headers: ghHeaders()});
+    const repo = r.ok ? true : r.status === 404 ? false : null;
+    vaultInfo = {checked: true, repo, vault: repo ? !!(await ghFile("vault.json")) : false};
+  } catch (e) { vaultInfo = {checked: true, repo: null, vault: null}; }
+  if (!sync && vaultInfo.vault) setStatus(null, "Sync is set up but locked on this browser.");
+  syncNote();
+  return vaultInfo;
+}
+function syncNote() {
+  const n = $("syncNote");
+  if (!n) return;
+  let dismissed = false;
+  try { dismissed = sessionStorage.getItem("dread.note") === "1"; } catch (e) { /* blocked */ }
+  if (sync || dismissed || !vaultInfo.checked || vaultInfo.vault === null) { n.hidden = true; return; }
+  n.innerHTML = vaultInfo.vault
+    ? `<span>Your ratings aren’t syncing on this browser.</span><button type="button" class="btn" data-note="open">Unlock sync</button><button type="button" class="act quiet" data-note="hide">Not now</button>`
+    : `<span>Rate on your phone, laptop and PC alike: sync takes two minutes to set up.</span><button type="button" class="btn" data-note="open">Set up sync</button><button type="button" class="act quiet" data-note="hide">Not now</button>`;
+  n.hidden = false;
+}
+
+let syncMode = null;
+function renderSync(force) {
+  const box = $("syncBox");
+  if (!box) return;
+  const mode = sync ? "on" : vaultInfo.vault ? "locked" : vaultInfo.checked ? "setup" : "checking";
+  if (mode === syncMode && !force && box.childElementCount) { const line = box.querySelector(".sync-status"); if (line) line.innerHTML = statusHTML(); return; }
+  syncMode = mode;
+  const user = `<input type="text" name="username" autocomplete="username" value="Dread List sync" class="sr" tabindex="-1" readonly aria-hidden="true">`;
+  let body = "";
+  if (mode === "on") {
+    body = `<p class="hint">Ratings, wants, passes and settings follow you to every browser you unlock. They’re saved encrypted in <a href="https://github.com/${SYNC_REPO}" target="_blank" rel="noopener noreferrer">${SYNC_NAME}</a>.</p>
+      <div class="btns left"><button type="button" class="btn" data-sync="pair">Add a device</button><button type="button" class="btn ghost" data-sync="now">Sync now</button><button type="button" class="btn ghost" data-sync="forget">Forget this browser</button></div>
+      <div id="pairBox" class="pair" hidden><div id="qr" class="qr"></div><div><p class="hint">Scan this with your phone’s camera, or send yourself the link. It carries your sync key: anyone with it can read and change your ratings, so keep it to yourself.</p><div class="btns left"><button type="button" class="btn ghost" data-sync="copy">Copy link</button></div></div></div>
+      <label class="check"><input type="checkbox" id="cfgShare"${cfg.share === 1 ? " checked" : ""}> <span>Tailor new films to me: publish a taste summary in ${SYNC_NAME} (the ids of films you loved, liked, wanted or passed; no dates, nothing else). The nightly rebuild then pulls in films similar to them and the Sunday curator reads it. Off means everything stays encrypted.</span></label>
+      <details><summary>Replace the token</summary><form id="tokenForm" class="syncform">
+        <label for="rTok">New token</label><input id="rTok" type="password" autocomplete="off" spellcheck="false" placeholder="github_pat_…" required>
+        <div class="btns left"><button type="submit" class="btn">Save token</button><a class="btn ghost" href="${NEW_TOKEN_URL}" target="_blank" rel="noopener noreferrer">Create a token</a></div></form></details>`;
+  } else if (mode === "locked") {
+    body = `<p class="hint">Sync is set up. Unlock it on this browser with your passphrase.</p>
+      <form id="unlockForm" class="syncform">${user}
+        <label for="uPass">Passphrase</label><input id="uPass" name="password" type="password" autocomplete="current-password" required>
+        <label class="check"><input type="checkbox" id="uRemember" checked> Remember on this browser</label>
+        <div class="btns left"><button type="submit" class="btn">Unlock</button></div>
+      </form>
+      <p class="hint">If Firefox clears site data when it closes, let it save this passphrase and it will fill it in for you, or add an exception for cybersecdigestdaily.github.io under Settings, Privacy &amp; Security, Cookies and Site Data.</p>`;
+  } else if (mode === "setup") {
+    body = `<p class="hint">Three one-off steps here. Every other browser then only needs your passphrase.</p>
+      <ol class="steps">
+        <li><a href="${NEW_REPO_URL}" target="_blank" rel="noopener noreferrer">Create the dread-sync repository</a>. Everything is prefilled; just press Create repository. Your ratings are encrypted before they’re saved there.
+          ${vaultInfo.repo ? `<span class="okay">Found it.</span>` : `<button type="button" class="act quiet" data-sync="recheck">I’ve created it</button>`}</li>
+        <li><a href="${NEW_TOKEN_URL}" target="_blank" rel="noopener noreferrer">Create a token</a>. Name, expiry and Contents: Read and write are prefilled. Under Repository access choose Only select repositories, then dread-sync, and press Generate token.</li>
+        <li>Paste the token and choose a passphrase of four or more random words.</li>
+      </ol>
+      <form id="setupForm" class="syncform">${user}
+        <label for="sTok">Token</label><input id="sTok" type="password" autocomplete="off" spellcheck="false" placeholder="github_pat_…" required>
+        <label for="sPass">Passphrase</label><input id="sPass" name="password" type="password" autocomplete="new-password" minlength="12" required>
+        <label for="sPass2">Passphrase again</label><input id="sPass2" type="password" autocomplete="new-password" minlength="12" required>
+        <div class="btns left"><button type="submit" class="btn">Turn on sync</button></div>
+      </form>`;
+  } else {
+    body = `<p class="hint">Checking for sync…</p>`;
+  }
+  box.innerHTML = `<p class="sync-status">${statusHTML()}</p>${body}<p class="err" id="sErr" hidden></p>`;
+}
+
+async function doSetup(form) {
+  const token = form.querySelector("#sTok").value.trim(), pass = form.querySelector("#sPass").value, pass2 = form.querySelector("#sPass2").value;
+  if (!/^(github_pat_|ghp_)\w{20,}$/.test(token)) { syncErr("That doesn’t look like a GitHub token. It should start with github_pat_."); return; }
+  if (pass.length < 12) { syncErr("Use a passphrase of at least 12 characters. Four random words works well."); return; }
+  if (pass !== pass2) { syncErr("The two passphrases don’t match."); return; }
+  busy(form, true, "Turning on sync…");
+  try {
+    const repo = await fetch(SYNC_API, {cache: "no-store", headers: ghHeaders(token)});
+    if (repo.status === 404) throw new Error("Create the dread-sync repository first (step 1), then try again.");
+    if (!repo.ok) throw httpError(repo);
+    const existing = await ghFile("vault.json", token);
+    let key, salt, iter = KDF_ITER;
+    if (existing) {
+      iter = existing.data.iter || KDF_ITER;
+      salt = existing.data.salt;
+      key = await deriveKey(pass, fromB64(salt), iter);
+      try { await unseal(key, existing.data, AAD_VAULT); } catch (e) { throw new Error("Sync already exists with a different passphrase. Unlock it instead, or delete vault.json in dread-sync to start again."); }
+    } else {
+      const s = crypto.getRandomValues(new Uint8Array(16));
+      salt = toB64(s);
+      key = await deriveKey(pass, s, iter);
+    }
+    const res = await ghWrite("vault.json", token, Object.assign({v: 1, kdf: "PBKDF2-SHA256", iter, salt}, await seal(key, token, AAD_VAULT)),
+      existing && existing.sha, existing ? "Update the sync token" : "Set up sync");
+    if (!res.ok) throw httpError(res);
+    await useCreds({token, key: await exportRaw(key)}, true);
+    vaultInfo = {checked: true, repo: true, vault: true};
+    await ensureReadme();
+    await pullAndMerge(true);
+    renderSync(true);
+    toast("Sync is on. Unlock your other browsers with the passphrase.");
+  } catch (e) { busy(form, false); syncErr(e.message); }
+}
+async function doUnlock(form) {
+  const pass = form.querySelector("#uPass").value, remember = form.querySelector("#uRemember").checked;
+  busy(form, true, "Unlocking…");
+  try {
+    const v = await ghFile("vault.json");
+    if (!v) throw new Error("Sync isn’t set up yet. Set it up on one browser first.");
+    const key = await deriveKey(pass, fromB64(v.data.salt), v.data.iter || KDF_ITER);
+    let token;
+    try { token = await unseal(key, v.data, AAD_VAULT); } catch (e) { throw new Error("That passphrase doesn’t unlock sync."); }
+    await useCreds({token, key: await exportRaw(key)}, remember);
+    await pullAndMerge(true);
+    renderSync(true);
+    toast("Sync unlocked on this browser");
+  } catch (e) { busy(form, false); syncErr(e.message); }
+}
+async function doReplaceToken(form) {
+  const token = form.querySelector("#rTok").value.trim();
+  if (!/^(github_pat_|ghp_)\w{20,}$/.test(token)) { syncErr("That doesn’t look like a GitHub token. It should start with github_pat_."); return; }
+  busy(form, true, "Saving…");
+  try {
+    const cur = await ghFile("vault.json", token);
+    if (!cur) throw new Error("vault.json is missing from dread-sync. Forget this browser and set sync up again.");
+    const res = await ghWrite("vault.json", token, Object.assign({}, cur.data, await seal(syncKey, token, AAD_VAULT)), cur.sha, "Replace the sync token");
+    if (!res.ok) throw httpError(res);
+    await useCreds({token, key: sync.key}, credsRemembered());
+    await pullAndMerge(true);
+    renderSync(true);
+    toast("Token replaced. Other browsers pick it up next time you unlock them.");
+  } catch (e) { busy(form, false); syncErr(e.message); }
+}
+async function ensureReadme() {
+  try {
+    if (await ghFile("README.md", sync.token)) return;
+    const text = "# dread-sync\n\nEncrypted sync data for the Dread List (https://cybersecdigestdaily.github.io/dread/).\n\n" +
+      "- `vault.json`: the sync token, encrypted with a key derived from a passphrase (PBKDF2-SHA256, 600,000 rounds, AES-256-GCM).\n" +
+      "- `state.json`: ratings and settings, encrypted with the same key. Its `taste` field is an optional plaintext summary (film ids only, no dates) used by the nightly rebuild and the weekly curator.\n\n" +
+      "Every save from the page is a commit. Nothing here is readable without the passphrase except `taste`.\n";
+    await fetch(`${SYNC_API}/contents/README.md`, {method: "PUT", headers: ghHeaders(sync.token, true), body: JSON.stringify({message: "Explain the files", content: b64enc(text)})});
+  } catch (e) { /* optional */ }
+}
+function forgetBrowser() {
+  if (!confirm("Stop syncing on this browser? Your ratings stay here and in sync, and you can unlock again with your passphrase.")) return;
+  dropCreds();
+  sync = null; syncKey = null; shaState = null;
+  vaultInfo = {checked: true, repo: true, vault: true};
+  setStatus(null, "Sync is locked on this browser.");
+  renderSync(true);
+}
+
+/* Pairing: a link carrying the token and key in the URL fragment, which browsers never send to a server. */
+const pairLink = () => location.origin + location.pathname + "#pair=" + b64url(JSON.stringify({t: sync.token, k: sync.key}));
+function loadScript(src) {
+  return new Promise((ok, fail) => {
+    if (window.qrcode) { ok(); return; }
+    const s = document.createElement("script");
+    s.src = src; s.onload = ok; s.onerror = fail;
+    document.head.append(s);
   });
 }
-function explain(res) {
-  if (res.status === 401) return "GitHub rejected the token. Check it hasn’t expired.";
-  if (res.status === 403) return "The token can’t write to that repository. It needs Contents: read and write.";
-  if (res.status === 404) return "Repository not found, or the token can’t see it.";
-  return `GitHub returned an error (${res.status}).`;
+function qrSVG(text) {
+  const qr = window.qrcode(0, "L");
+  qr.addData(text);
+  qr.make();
+  const n = qr.getModuleCount(), m = 4;
+  let d = "";
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (qr.isDark(r, c)) d += `M${c + m} ${r + m}h1v1h-1z`;
+  return `<svg viewBox="0 0 ${n + 2 * m} ${n + 2 * m}" width="240" height="240" shape-rendering="crispEdges" role="img" aria-label="QR code for the pairing link"><rect width="100%" height="100%" fill="#fff"/><path d="${d}" fill="#000"/></svg>`;
 }
-async function pull(conn) {
-  const res = await gh(conn, "GET");
-  if (res.status === 404) {
-    const repo = await fetch(`https://api.github.com/repos/${conn.repo}`, {cache: "no-store", headers: {"Accept": "application/vnd.github+json", "Authorization": "Bearer " + conn.token}});
-    if (!repo.ok) throw new Error(explain(repo));
-    remoteSha = null;
-    return normState(null);
+async function showPair() {
+  const box = $("pairBox");
+  if (!box || !sync) return;
+  box.hidden = !box.hidden;
+  if (box.hidden) return;
+  try { await loadScript("vendor/qrcode.js"); $("qr").innerHTML = qrSVG(pairLink()); }
+  catch (e) { $("qr").textContent = "The QR code didn’t load. Copy the link instead."; }
+}
+async function copyPair(btn) {
+  try { await navigator.clipboard.writeText(pairLink()); btn.textContent = "Copied"; }
+  catch (e) { window.prompt("Copy this link", pairLink()); }
+  setTimeout(() => { btn.textContent = "Copy link"; }, 2000);
+}
+async function acceptPair() {
+  const m = /^#pair=([A-Za-z0-9_-]+)$/.exec(location.hash);
+  if (!m) return false;
+  history.replaceState(null, "", location.pathname + location.search + "#for");
+  try {
+    const c = JSON.parse(unb64url(m[1]));
+    if (!c.t || !c.k) throw new Error("bad link");
+    await useCreds({token: c.t, key: c.k}, true);
+    toast("This browser is now synced");
+    return true;
+  } catch (e) {
+    toast("That pairing link didn’t work. Unlock with your passphrase in Settings instead.");
+    return false;
   }
-  if (!res.ok) throw new Error(explain(res));
-  const j = await res.json();
-  remoteSha = j.sha;
-  try { return normState(JSON.parse(b64dec(j.content))); } catch (e) { return normState(null); }
+}
+/* State file: pull, merge by per-film timestamps, push. */
+async function pullRemote() {
+  const f = await ghFile("state.json", sync.token);
+  if (!f) { shaState = null; return normState(null); }
+  shaState = f.sha;
+  if (!f.data || !f.data.ct) return normState(null);
+  try { return normState(JSON.parse(await unseal(syncKey, f.data, AAD_STATE))); }
+  catch (e) { throw new Error("Couldn’t decrypt the synced ratings. If the passphrase changed on another browser, forget this one and unlock again."); }
 }
 function merge(a, b) {
   const out = {v: 2, films: Object.assign({}, a.films), cfg: a.cfg};
@@ -828,21 +1134,29 @@ function merge(a, b) {
   return out;
 }
 const same = (a, b) => JSON.stringify([Object.entries(a.films).sort(), a.cfg]) === JSON.stringify([Object.entries(b.films).sort(), b.cfg]);
-async function pushNow(conn) {
-  const body = () => Object.assign({message: `Dread list update ${nowISO().slice(0, 16)}Z`, content: b64enc(JSON.stringify(state) + "\n")}, remoteSha ? {sha: remoteSha} : {});
-  let res = await gh(conn, "PUT", body());
-  if (res.status === 409 || res.status === 422) {
-    const remote = await pull(conn);
-    state = merge(state, remote); cfg = state.cfg; saveLocal();
-    res = await gh(conn, "PUT", body());
+function tasteSummary() {
+  const t = {updated: todayISO(), loved: [], liked: [], meh: [], disliked: [], want: [], pass: [], svc: OWNABLE.filter(k => cfg.svc[k])};
+  for (const f of FILMS) {
+    const e = eff(f.id);
+    if (e.r) t[e.r].push(f.id); else if (e.w) t.want.push(f.id); else if (e.x) t.pass.push(f.id);
   }
-  if (!res.ok) throw new Error(explain(res));
-  const j = await res.json();
-  remoteSha = j.content && j.content.sha;
+  return t;
+}
+async function pushNow() {
+  const body = async () => Object.assign({v: 1}, await seal(syncKey, JSON.stringify(state), AAD_STATE), cfg.share === 1 && FILMS.length ? {taste: tasteSummary()} : {});
+  const msg = () => `Sync ${nowISO().slice(0, 16)}Z`;
+  let res = await ghWrite("state.json", sync.token, await body(), shaState, msg());
+  if (res.status === 409 || res.status === 422) {
+    const remote = await pullRemote();
+    state = merge(state, remote); cfg = state.cfg; saveLocal();
+    res = await ghWrite("state.json", sync.token, await body(), shaState, msg());
+  }
+  if (!res.ok) throw httpError(res);
+  shaState = (await res.json()).content.sha;
 }
 let pushTimer = null, pushing = false, again = false;
 function queuePush() {
-  if (!sync) { setStatus(null, "Ratings are saved in this browser only."); return; }
+  if (!sync) return;
   setStatus("busy", "Saving…");
   clearTimeout(pushTimer);
   pushTimer = setTimeout(runPush, 1200);
@@ -850,41 +1164,35 @@ function queuePush() {
 async function runPush() {
   if (pushing) { again = true; return; }
   pushing = true;
-  try { await pushNow(sync); setStatus("on", `Synced at ${timeNow()}`); }
+  try { await pushNow(); setStatus("on", `Synced at ${timeNow()}`); }
   catch (e) { setStatus("err", e.message + " Ratings are still saved in this browser."); }
   finally { pushing = false; if (again) { again = false; runPush(); } }
 }
-async function pullAndMerge() {
-  if (!sync) return;
+async function pullAndMerge(force) {
+  if (!sync || (!force && Date.now() - lastPull < 60000)) return;
+  lastPull = Date.now();
   setStatus("busy", "Syncing…");
   try {
-    const remote = await pull(sync), merged = merge(state, remote);
-    const changedLocal = !same(merged, state), changedRemote = !same(merged, remote);
+    const remote = await pullRemote(), merged = merge(state, remote);
+    const changedLocal = !same(merged, state), changedRemote = !same(merged, remote) || !shaState;
     state = merged; cfg = state.cfg; saveLocal();
-    if (changedLocal) { applyTheme(); refresh({keepBar: true}); }
-    if (changedRemote) await pushNow(sync);
+    if (changedLocal && FILMS.length) { applyTheme(); refresh({keepBar: true}); }
+    if (changedRemote) await pushNow();
     setStatus("on", `Synced at ${timeNow()}`);
   } catch (e) { setStatus("err", e.message); }
-}
-async function connect(conn, btn) {
-  $("sErr").hidden = true;
-  const label = btn.textContent;
-  btn.disabled = true; btn.textContent = "Checking…";
-  try {
-    const remote = await pull(conn);
-    state = merge(state, remote); cfg = state.cfg; saveLocal();
-    await pushNow(conn);
-    sync = conn; store.set(KEY_SYNC, sync);
-    setStatus("on", `Synced to ${conn.repo}/${conn.path} at ${timeNow()}`);
-    applyTheme(); fillSettings(); refresh();
-  } catch (e) { showErr(e.message); }
-  finally { btn.disabled = false; btn.textContent = label; }
 }
 
 /* ---------- Boot ---------- */
 async function boot() {
   applyTheme();
   wire();
+  store.del("dread.sync.v1"); // the previous version's per-browser token, no longer used
+  $("syncNote").addEventListener("click", e => {
+    const b = e.target.closest("[data-note]");
+    if (!b) return;
+    if (b.dataset.note === "open") openSettings(vaultInfo.vault ? "uPass" : null);
+    else { try { sessionStorage.setItem("dread.note", "1"); } catch (err) { /* blocked */ } syncNote(); }
+  });
   try {
     const res = await fetch("data.json", {cache: "no-cache"});
     if (!res.ok) throw new Error(String(res.status));
@@ -896,11 +1204,13 @@ async function boot() {
   $("boot").remove();
   const when = DATA_CHECKED && !isNaN(DATA_CHECKED) ? DATA_CHECKED.toLocaleString("en-GB", {day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"}) : "unknown";
   $("source").textContent = `UK availability, prices and scores from JustWatch, refreshed every morning (last check ${when}). Subgenres from Wikidata. Gore marked ~ is estimated from the certificate and synopsis. BBC iPlayer needs a TV licence.`;
-  if (sync) setStatus("busy", "Syncing…");
-  else if (store.raw(MONEY_KEY)) setStatus(null, "Sync is off. Open Settings to use your Money Plan connection.");
-  else setStatus(null, "Ratings are saved in this browser only.");
+  if (!(await acceptPair())) {
+    const c = loadCreds();
+    if (c) { try { await useCreds(c, credsRemembered()); } catch (e) { dropCreds(); } }
+  }
+  setStatus(sync ? "busy" : null, sync ? "Syncing…" : "Ratings are saved in this browser only.");
   route();
-  if (sync) pullAndMerge();
+  if (sync) pullAndMerge(true); else checkVault();
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") pullAndMerge(); });
 }
 boot();
