@@ -7,7 +7,8 @@ Shudder), plus JustWatch's "similar titles" around every curated and rated film.
 
 Every film gets UK streaming offers with deep links and leaving dates, the cheapest rental and
 purchase, IMDb and Rotten Tomatoes scores, subgenre tags (curated, Wikidata and synopsis
-keywords), an estimated gore level and a self-hosted poster thumbnail.
+keywords), its original language when that isn't English, an estimated gore level and a
+self-hosted poster thumbnail.
 
 Python standard library only. Nothing here needs an API key. If JustWatch can't be reached the
 existing data.json is kept, and a film that can't be looked up keeps its last known data.
@@ -36,12 +37,13 @@ KEEP_DAYS = 120  # a discovered film stays this long after it was last discovere
 # Optional, opt-in taste summary written by the page (film ids only, no dates). Public, so no secret is needed.
 TASTE_URL = "https://raw.githubusercontent.com/CyberSecDigestDaily/dread-sync/main/state.json"
 
-CONTENT = """content(country: GB, language: "en") { title originalReleaseYear fullPath shortDescription runtime
+CONTENT = """content(country: GB, language: "en") { title originalTitle originalReleaseYear fullPath shortDescription runtime
   ageCertification posterUrl productionCountries genres { shortName } credits(role: DIRECTOR) { name }
   externalIds { imdbId } scoring { imdbScore imdbVotes tomatoMeter tmdbPopularity } }
 offers(country: GB, platform: WEB, filter: { bestOnly: true }) { monetizationType retailPriceValue currency
   standardWebURL availableToTime package { shortName clearName } }"""
-FIELDS = "id objectType ... on MovieOrShow { " + CONTENT + " }"
+# objectType has to sit inside the fragment: JustWatch rejects it on a bare node(id:) lookup.
+FIELDS = "id ... on MovieOrShow { objectType " + CONTENT + " }"
 
 # Discovery: (label, extra filter, sort, pages of 100)
 MINE = ["nfx", "nfa", "amp", "dnp", "mxx", "aho", "cru", "ntv"]
@@ -112,6 +114,24 @@ GENRE_TAGS = {"scf": "sci-fi", "cmy": "comedy", "act": "action", "hst": "period"
 VIOLENT = re.compile(r"tortur|sadis|gruesome|\bgor(e|y)\b|mutilat|dismember|massacre|slaughter|butcher|bloodbath|brutal|cannibal|carnage|depraved|blood[- ]?soaked|savage|bloodthirsty|kill(s|ing)? (them|everyone)")
 QUIET = {"ghost", "possession", "occult", "psychological", "mystery", "liminal", "grief", "religious", "witch"}
 LOUD = {"slasher", "creature", "outbreak", "body-horror", "home-invasion", "survival"}
+
+# Original language. Wikidata's P364 decides; JustWatch's original title and the production countries break ties
+# and fill gaps. English films get no field; anything else gets its ISO code ("xx" when the language is unknown).
+EN_CO = {"US", "GB", "IE", "CA", "AU", "NZ"}
+CO_LANG = {"FR": "fr", "BE": "fr", "LU": "fr", "ES": "es", "MX": "es", "AR": "es", "CL": "es", "CO": "es", "UY": "es", "PE": "es",
+           "VE": "es", "DE": "de", "AT": "de", "CH": "de", "IT": "it", "JP": "ja", "KR": "ko", "CN": "zh", "TW": "zh", "HK": "zh",
+           "TH": "th", "ID": "id", "PH": "tl", "MY": "ms", "VN": "vi", "IN": "hi", "NO": "no", "SE": "sv", "DK": "da", "FI": "fi",
+           "IS": "is", "NL": "nl", "PL": "pl", "CZ": "cs", "SK": "sk", "HU": "hu", "RU": "ru", "SU": "ru", "UA": "uk", "TR": "tr",
+           "IR": "fa", "IL": "he", "BR": "pt", "PT": "pt", "GR": "el", "RO": "ro", "RS": "sr", "BG": "bg", "EE": "et", "LT": "lt",
+           "LV": "lv", "AE": "ar", "EG": "ar", "SA": "ar", "MA": "ar", "LK": "si", "MK": "mk"}
+NON_LATIN = re.compile(r"[^\u0000-\u024F\u1E00-\u1EFF\u2000-\u206F\u20A0-\u20CF\u2100-\u214F\u2190-\u21FF\u2460-\u24FF]")
+NO_LANG = {"zxx", "und", "mul", "mis"}
+LANG_ALIAS = {"cmn": "zh", "nb": "no", "nn": "no", "nob": "no", "nno": "no"}
+# Wikidata gets a few wrong, or can't say which language dominates a bilingual film. IMDb id: ISO code, or "en".
+LANG_FIX = {"tt1999995": "en",   # Would You Rather (2012): Wikidata says Spanish
+            "tt14253846": "da",  # Speak No Evil (2022): Danish family, half the film in Danish
+            "tt8359848": "fr",   # Climax (2018): French dialogue
+            "tt0067690": "en"}   # Daughters of Darkness (1971): shot in English
 
 
 def log(*a):
@@ -253,29 +273,41 @@ def new_arrivals():
 
 # ---------- Wikidata ----------
 
+def sparql_rows(sparql):
+    body = urllib.parse.urlencode({"query": sparql, "format": "json"}).encode()
+    for attempt in range(2):
+        try:
+            req = urllib.request.Request(WIKIDATA, data=body, headers={
+                "user-agent": UA, "accept": "application/sparql-results+json",
+                "content-type": "application/x-www-form-urlencoded"})
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                return json.load(resp)["results"]["bindings"]
+        except Exception as exc:  # Wikidata is best-effort enrichment
+            log(f"  Wikidata attempt {attempt + 1} failed: {exc}")
+            time.sleep(4)
+    return None
+
+
 def wikidata(imdb_ids):
-    out = {}
+    """By IMDb id: subgenres and main subjects as one lowercase string, and original languages as ISO codes.
+    A film missing from the language map wasn't found (or Wikidata failed); an empty list means found, no language."""
+    text, langs = {}, {}
     for batch in chunks(sorted(imdb_ids), 120):
-        sparql = ('SELECT ?imdb (GROUP_CONCAT(DISTINCT ?gl; separator="|") AS ?g) (GROUP_CONCAT(DISTINCT ?sl; separator="|") AS ?s) WHERE { '
-                  "VALUES ?imdb { " + " ".join(json.dumps(i) for i in batch) + " } ?film wdt:P345 ?imdb . "
-                  'OPTIONAL { ?film wdt:P136 ?gn . ?gn rdfs:label ?gl FILTER(lang(?gl) = "en") } '
-                  'OPTIONAL { ?film wdt:P921 ?sn . ?sn rdfs:label ?sl FILTER(lang(?sl) = "en") } } GROUP BY ?imdb')
-        body = urllib.parse.urlencode({"query": sparql, "format": "json"}).encode()
-        for attempt in range(2):
-            try:
-                req = urllib.request.Request(WIKIDATA, data=body, headers={
-                    "user-agent": UA, "accept": "application/sparql-results+json",
-                    "content-type": "application/x-www-form-urlencoded"})
-                with urllib.request.urlopen(req, timeout=90) as resp:
-                    rows = json.load(resp)["results"]["bindings"]
-                for b in rows:
-                    out[b["imdb"]["value"]] = (b.get("g", {}).get("value", "") + "|" + b.get("s", {}).get("value", "")).lower()
-                break
-            except Exception as exc:  # Wikidata is best-effort enrichment
-                log(f"  Wikidata attempt {attempt + 1} failed: {exc}")
-                time.sleep(4)
+        values = "VALUES ?imdb { " + " ".join(json.dumps(i) for i in batch) + " } ?film wdt:P345 ?imdb . "
+        rows = sparql_rows('SELECT ?imdb (GROUP_CONCAT(DISTINCT ?gl; separator="|") AS ?g) (GROUP_CONCAT(DISTINCT ?sl; separator="|") AS ?s) WHERE { '
+                           + values + 'OPTIONAL { ?film wdt:P136 ?gn . ?gn rdfs:label ?gl FILTER(lang(?gl) = "en") } '
+                           'OPTIONAL { ?film wdt:P921 ?sn . ?sn rdfs:label ?sl FILTER(lang(?sl) = "en") } } GROUP BY ?imdb')
+        for b in rows or []:
+            text[b["imdb"]["value"]] = (b.get("g", {}).get("value", "") + "|" + b.get("s", {}).get("value", "")).lower()
         time.sleep(1)
-    return out
+        rows = sparql_rows('SELECT ?imdb (GROUP_CONCAT(DISTINCT ?lc; separator="|") AS ?l) WHERE { ' + values +
+                           "OPTIONAL { ?film wdt:P364 ?ln . OPTIONAL { ?ln wdt:P218 ?l1 } OPTIONAL { ?ln wdt:P220 ?l3 } "
+                           "BIND(COALESCE(?l1, ?l3) AS ?lc) } } GROUP BY ?imdb")
+        for b in rows or []:
+            codes = [LANG_ALIAS.get(c.strip().lower(), c.strip().lower()) for c in b.get("l", {}).get("value", "").split("|")]
+            langs[b["imdb"]["value"]] = sorted({c for c in codes if re.fullmatch(r"[a-z]{2,3}", c) and c not in NO_LANG})
+        time.sleep(1)
+    return text, langs
 
 
 # ---------- Shaping ----------
@@ -407,6 +439,36 @@ def keep_discovered(c, sets):
     return False
 
 
+def language(c, wd_langs, override=None):
+    """The original language when it isn't English: an ISO code, or "xx" when it's unknown. None means English."""
+    if override:
+        return None if override == "en" else override
+    co = c.get("productionCountries") or []
+    title, orig = c.get("title") or "", c.get("originalTitle") or ""
+    en_co = any(x in EN_CO for x in co)
+    home = [CO_LANG[x] for x in co if x in CO_LANG]
+
+    def pick(cands):
+        return next((h for h in home if h in cands), sorted(cands)[0])
+
+    if wd_langs:
+        others = [lang for lang in wd_langs if lang != "en"]
+        if not others:
+            return None
+        if "en" not in wd_langs:
+            return pick(others)
+        # Partly English: count it as English when it's an English-speaking production or kept its English title.
+        same = not orig or norm(orig) == norm(title) or (len(norm(orig)) >= 4 and norm(title).startswith(norm(orig)))
+        return None if en_co or same else pick(others)
+    if (c.get("originalReleaseYear") or 9999) < 1929:
+        return None  # silent era: intertitles, translated for UK releases
+    if orig and NON_LATIN.search(orig):
+        return home[0] if home else "xx"
+    if en_co or not co:
+        return None
+    return home[0] if home else "xx"
+
+
 def short(text, limit=300):
     text = re.sub(r"\s+", " ", (text or "")).strip()
     if len(text) <= limit:
@@ -415,10 +477,17 @@ def short(text, limit=300):
     return cut + "…"
 
 
-def record(node, *, base=None, wd=None, prev=None):
+def record(node, *, base=None, wd=None, langs=None, prev=None):
     c, s = node["content"], node["content"].get("scoring") or {}
+    imdb_id = (c.get("externalIds") or {}).get("imdbId") or ""
     strong = list((base or {}).get("tg") or [])
-    auto, flags, splatter, text = tags_for(node, (wd or {}).get(((c.get("externalIds") or {}).get("imdbId")) or "", ""), strong)
+    auto, flags, splatter, text = tags_for(node, (wd or {}).get(imdb_id, ""), strong)
+    override = (base or {}).get("lg") or LANG_FIX.get(imdb_id)
+    if not override and imdb_id not in (langs or {}) and prev:
+        lg = prev.get("lg")  # Wikidata didn't answer for this film: keep yesterday's call
+    else:
+        lg = language(c, (langs or {}).get(imdb_id) or [], override)
+    title, orig = (base or {}).get("t") or c.get("title") or "", (c.get("originalTitle") or "").strip()
     streams, rent, buy, cinema = offers(node)
     cert = (c.get("ageCertification") or "").upper() or None
     g = (base or {}).get("g")
@@ -427,7 +496,8 @@ def record(node, *, base=None, wd=None, prev=None):
         g, est = gore_estimate(cert, set(strong) | set(auto), text, splatter), 1
     poster = (c.get("posterUrl") or "")
     rec = {
-        "id": (base or {}).get("id") or node["id"], "jid": node["id"], "t": (base or {}).get("t") or c.get("title"),
+        "id": (base or {}).get("id") or node["id"], "jid": node["id"], "t": title,
+        "ot": orig if orig and norm(orig) != norm(title) and norm(orig) != norm(c.get("title")) else None, "lg": lg,
         "y": c.get("originalReleaseYear") or (base or {}).get("y"), "jw": c.get("fullPath"),
         "d": short(c.get("shortDescription")), "rn": c.get("runtime"), "ce": cert,
         "co": (c.get("productionCountries") or [])[:3], "dir": [p["name"] for p in (c.get("credits") or [])][:2],
@@ -492,7 +562,8 @@ def load_taste():
 def main():
     spec = json.loads(FILMS.read_text(encoding="utf-8"))
     curated = [dict(f, cur=1, key=f["id"]) for f in spec.get("films", [])]
-    rated = [dict(f, seed=f["r"], key=f"seed:{norm(f['t'])}{f['y']}") for f in spec.get("rated", [])]
+    # Profile ratings: "s" is the 1-10 score; older entries only have the four-step "r" (loved, liked, meh, disliked).
+    rated = [dict(f, seed=f.get("s") or f.get("r"), key=f"seed:{norm(f['t'])}{f['y']}") for f in spec.get("rated", []) if f.get("s") or f.get("r")]
     try:
         old = json.loads(DATA.read_text(encoding="utf-8"))
         prev = {f["id"]: f for f in old.get("films", [])}
@@ -573,8 +644,8 @@ def main():
 
     # 5. Wikidata subgenres.
     imdb = {(n["content"].get("externalIds") or {}).get("imdbId") for n in list(kept.values()) + list(nodes.values())} - {None}
-    wd = wikidata(imdb)
-    log(f"Wikidata: {len(wd)} of {len(imdb)} matched")
+    wd, langs = wikidata(imdb)
+    log(f"Wikidata: {len(wd)} of {len(imdb)} matched, {sum(1 for v in langs.values() if v)} with an original language")
     # JustWatch's horror filter lets some thrillers and dramas through: keep a discovered film only if JustWatch
     # or Wikidata actually calls it horror.
     def is_horror(n):
@@ -591,12 +662,17 @@ def main():
         n = nodes.get(f["key"])
         p = prev.get(f["id"]) if f.get("cur") else prev_by_key.get(f["key"])
         if n:
-            r = record(n, base=f, wd=wd, prev=p)
+            r = record(n, base=f, wd=wd, langs=langs, prev=p)
         elif p:
-            r = dict(p)  # keep last known
+            r = dict(p)  # keep last known, but take the latest hand-edited fields
+            for k in ("p", "w", "aka", "seed"):
+                if f.get(k):
+                    r[k] = f[k]
         else:
             r = {"id": f["id"] if f.get("cur") else f["key"], "t": f["t"], "y": f["y"], "g": f.get("g") or "M",
                  "tg": f.get("tg") or [], "o": [], **{k: f[k] for k in ("cur", "p", "w", "aka", "seed", "fl") if f.get(k)}}
+            if f.get("lg") and f["lg"] != "en":
+                r["lg"] = f["lg"]
         if not f.get("cur"):
             r["_k"] = f["key"]
         if not r.get("id") or r["id"] in id_of.values():
@@ -607,7 +683,7 @@ def main():
     for jid, n in sorted(kept.items(), key=lambda kv: -((kv[1]["content"].get("scoring") or {}).get("tmdbPopularity") or 0)):
         if jid in id_of:
             continue
-        r = record(n, wd=wd, prev=prev.get(jid))
+        r = record(n, wd=wd, langs=langs, prev=prev.get(jid))
         fresh = sets.get(jid, set()) - {"kept", "taste"}
         r["ls"] = TODAY.isoformat() if fresh else (prev.get(jid) or {}).get("ls") or TODAY.isoformat()
         films.append(r)
@@ -634,7 +710,8 @@ def main():
     checked = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     lines = ",\n".join(json.dumps(f, ensure_ascii=False, separators=(",", ":")) for f in films)
     DATA.write_text('{"v":2,"checked":"' + checked + '","source":"JustWatch UK, Wikidata","films":[\n' + lines + "\n]}\n", encoding="utf-8")
-    log(f"Wrote {len(films)} films ({sum(1 for f in films if f.get('cur'))} curated, {sum(1 for f in films if f.get('seed'))} rated).")
+    log(f"Wrote {len(films)} films ({sum(1 for f in films if f.get('cur'))} curated, {sum(1 for f in films if f.get('seed'))} rated, "
+        f"{sum(1 for f in films if f.get('lg'))} not in English).")
     return 0
 
 
