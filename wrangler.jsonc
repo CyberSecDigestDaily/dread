@@ -13,11 +13,12 @@
     "binding": "ASSETS",
     // The API and profile pages, plus page documents so www.dreadlist.co.uk can be redirected to the bare domain.
     // Everything else (scripts, styles, data, posters, fonts) is served straight from the edge without the Worker.
-    "run_worker_first": ["/api/*", "/u/*", "/", "/privacy"]
+    "run_worker_first": ["/api/*", "/u/*", "/", "/privacy", "/about"]
   },
   "d1_databases": [
     {"binding": "DB", "database_name": "dread", "database_id": "229d59c1-21e5-4eb9-b299-0aa7e0512b7c"}
   ],
+  // Secrets (set in the Cloudflare dashboard, never here): TMDB_KEY, a TMDB API read access token, switches on film search.
   "vars": {
     // Comma-separated origins allowed to make changes; the first is canonical. RP_ID is the passkey domain.
     "ORIGIN": "https://dreadlist.co.uk",

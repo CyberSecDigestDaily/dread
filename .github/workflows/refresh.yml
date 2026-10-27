@@ -7,8 +7,8 @@ on:
   push:
     branches: [main]
     # Editing the list, the script or the page re-checks and republishes straight away. Data commits don't retrigger.
-    paths: ["films.json", "refresh.py", "docs/index.html", "docs/app.js", "docs/account.js", "docs/together.js", "docs/style.css",
-            "docs/privacy.html", "docs/_headers", "docs/vendor/**", "worker/**", "wrangler.jsonc", ".github/workflows/refresh.yml"]
+    paths: ["films.json", "refresh.py", "docs/*.html", "docs/*.js", "docs/style.css", "docs/*.png", "docs/manifest.webmanifest",
+            "docs/_headers", "docs/vendor/**", "worker/**", "wrangler.jsonc", ".github/workflows/refresh.yml"]
   workflow_dispatch: # manual "Run workflow" button
 
 concurrency:

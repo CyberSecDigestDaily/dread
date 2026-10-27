@@ -1,7 +1,8 @@
 "use strict";
 /* Dread List: a horror recommender that learns from your buttons.
    data.json is rebuilt daily by refresh.py (JustWatch UK + Wikidata). Ratings, wants, passes and settings live in
-   this browser, and in your account if you sign in (account.js); shared lists and profiles are in together.js.
+   this browser, and in your account if you sign in (account.js); shared lists and profiles are in together.js, adding
+   films from TMDB in find.js, the welcome page, onboarding and share cards in extras.js.
    No third-party requests from the page itself. */
 
 /* ---------- Config ---------- */
@@ -71,7 +72,7 @@ const store = {
 const svcName = k => SVC[k] ? SVC[k].n : k.startsWith("ch:") ? k.slice(3) : k.startsWith("free:") ? k.slice(5) : k;
 const isFree = k => !!(SVC[k] && SVC[k].free) || k.startsWith("free:");
 /* Case- and accent-insensitive text for search: "Fréwaka" matches "frewaka". */
-const fold = s => String(s == null ? "" : s).normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+const fold = s => String(s == null ? "" : s).normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase();
 const foldKey = s => fold(s).replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 const LANG_NAMES = (() => { try { return new Intl.DisplayNames(["en-GB"], {type: "language"}); } catch (e) { return null; } })();
 function langName(code) {
@@ -79,15 +80,32 @@ function langName(code) {
   try { const n = LANG_NAMES && LANG_NAMES.of(code); if (n && n.toLowerCase() !== code) return n; } catch (e) { /* unknown code */ }
   return code.toUpperCase();
 }
+/* "A", "A and B", "A, B and C". */
+const andList = xs => xs.length < 2 ? (xs[0] || "") : xs.slice(0, -1).join(", ") + " and " + xs[xs.length - 1];
+const plural = (n, one, many) => `${n.toLocaleString("en-GB")} ${n === 1 ? one : many || one + "s"}`;
+/* Wide screens get side-by-side layouts; phones get one column and a tab bar at the bottom. */
+const wide = () => { try { return matchMedia("(min-width: 700px)").matches; } catch (e) { return true; } };
+/* Added to the iPhone or Android home screen: its own window, with its own storage and sign-in. */
+const isStandalone = () => { try { return navigator.standalone === true || matchMedia("(display-mode: standalone)").matches; } catch (e) { return false; } };
+/* The phone's share sheet where there is one (Messages, WhatsApp, Instagram…), otherwise copy the link. Returns true
+   when the share sheet took it. Call it straight from a tap: browsers only allow sharing in answer to one. */
+async function shareLink(data) {
+  if (navigator.share) {
+    try { await navigator.share(data); return true; } catch (e) { if (e && e.name === "AbortError") return true; }
+  }
+  try { await navigator.clipboard.writeText(data.url); toast("Link copied"); } catch (e) { window.prompt("Copy this link", data.url); }
+  return false;
+}
 
 /* ---------- State ---------- */
-let FILMS = [], BY = new Map(), SEED = new Map(), NEIGH = new Map(), FEAT = new Map(), DATA_CHECKED = null;
+let FILMS = [], BY = new Map(), SEED = new Map(), NEIGH = new Map(), FEAT = new Map(), ALIAS = new Map(), DATA_CHECKED = null;
 let state = normState(store.get(KEY_STATE));
 let M = {aff: new Map(), cnt: new Map(), signals: 0};
 /* Filters shared by For you and the Watchlist: q search, svc services (any of), dir director, tag feature, gore, len,
-   sort. loose shows every search match whatever the filters. rf, rq and rsort belong to Rated. */
+   sort. loose shows every search match whatever the filters. rf, rq and rsort belong to Rated. film is the film whose
+   details are open; sheet is the open filter sheet. */
 const ui = {view: "for", q: "", svc: new Set(), dir: "", gore: "any", len: "any", sort: "match", tag: null, shown: PAGE, loose: false,
-  open: new Set(), rating: new Set(), focus: null, rf: "all", rq: "", rsort: "recent", roll: 0, wild: new Set(), jumping: false};
+  rating: new Set(), focus: null, rf: "all", rq: "", rsort: "recent", roll: 0, wild: new Set(), film: null, sheet: null, base: []};
 const undo = [];
 let cfg = state.cfg;
 
@@ -124,12 +142,14 @@ function eff(id) {
 const sig = e => e.s ? SCORE_SIG[e.s] : e.x ? SIG_PASS : e.w ? SIG_WANT : null;
 const isDone = e => !!(e.s || e.seen);
 /* A compact copy of a film travels with your rating, so it keeps teaching the model (and stays in Rated, synopsis
-   and all) even after the film drops out of the daily pool. */
-const SNAP_KEYS = ["t", "y", "jid", "px", "tg", "ta", "dir", "co", "g", "ge", "fl", "rn", "im", "rt", "imdb", "jw", "d", "lg", "ot"];
+   and all) even after the film drops out of the daily pool. Films added from TMDB also carry their TMDB id, poster
+   and the services TMDB lists, so they work before the nightly rebuild takes them in. */
+const SNAP_KEYS = ["t", "y", "jid", "px", "tg", "ta", "dir", "co", "g", "ge", "fl", "rn", "im", "rt", "imdb", "jw", "d", "lg", "ot", "tm", "tp"];
 const snapVal = v => v !== undefined && v !== null && !(Array.isArray(v) && !v.length);
 function snap(f) {
   const s = {};
   if (f) SNAP_KEYS.forEach(k => { if (snapVal(f[k])) s[k] = f[k]; });
+  if (f && f.tm && Array.isArray(f.o) && f.o.length) s.o = f.o.map(o => [o[0], "", null]).slice(0, 12);
   return s;
 }
 /* Older copies lack newer keys (the synopsis, the language): fill the gaps from today's pool, never overwriting. */
@@ -171,6 +191,9 @@ function fromV1(f) {
 function prepare(data) {
   FILMS = (data.films || []).map(f => data.v === 2 ? f : fromV1(f)).filter(f => f && f.id && f.t);
   BY = new Map(FILMS.map(f => [f.id, f]));
+  // A film someone added from TMDB that the nightly rebuild later found under its JustWatch id lists the old id here.
+  ALIAS = new Map();
+  FILMS.forEach(f => (f.al || []).forEach(a => { if (typeof a === "string" && !BY.has(a)) ALIAS.set(a, f.id); }));
   SEED = new Map(FILMS.filter(f => toScore(f.seed)).map(f => [f.id, toScore(f.seed)]));
   NEIGH = new Map();
   const link = (a, b) => { if (!BY.has(a) || !BY.has(b) || a === b) return; if (!NEIGH.has(a)) NEIGH.set(a, new Set()); NEIGH.get(a).add(b); };
@@ -181,23 +204,38 @@ function prepare(data) {
   adoptGone();
   buildDirs();
 }
-/* Every director in the pool, most films first, for the director filter. */
+/* Move entries filed under an alias to the film's real id (newest change wins, as in sync). */
+function migrateAliases() {
+  const moved = [];
+  for (const [from, to] of ALIAS) {
+    const e = state.films[from];
+    if (!e || !(e.s || e.seen || e.w || e.x)) continue;
+    const cur = state.films[to];
+    if (!cur || !(cur.s || cur.seen || cur.w || cur.x) || String(e.t || "") > String(cur.t || "")) {
+      state.films[to] = Object.assign({}, e, {t: nowISO(), f: (cur && cur.f) || snap(BY.get(to)) || e.f});
+    }
+    state.films[from] = {t: nowISO()};
+    moved.push(from, to);
+  }
+  if (moved.length) { saveLocal(); queuePush(moved); }
+  return moved.length / 2;
+}
+/* Every director in the pool, most films first, for search suggestions. */
 let DIRS = [];
 function buildDirs() {
   const n = new Map();
   FILMS.forEach(f => (f.dir || []).forEach(d => n.set(d, (n.get(d) || 0) + 1)));
   DIRS = [...n].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-  // One suggestion list for the director box, kept outside the bar so it isn't rebuilt on every render.
-  let dl = $("dirList");
-  if (!dl) { dl = document.createElement("datalist"); dl.id = "dirList"; document.body.append(dl); }
-  dl.innerHTML = DIRS.map(([d, c]) => `<option value="${esc(d)}">${c} film${c === 1 ? "" : "s"}</option>`).join("");
 }
-/* Films you rated, wanted or passed that are no longer in today's pool come back from the copy saved with the rating. */
+/* Films you rated, wanted or passed that are no longer in today's pool come back from the copy saved with the rating.
+   Films added from TMDB come back the same way, with the services TMDB listed, until the nightly rebuild has them. */
 function adoptGone() {
   let added = 0;
   for (const [id, e] of Object.entries(state.films)) {
-    if (!e.f || BY.has(id)) continue;
-    const f = Object.assign({id, gone: 1, o: []}, e.f);
+    if (!e.f || BY.has(id) || ALIAS.has(id)) continue;
+    if (!(e.s || e.seen || e.w || e.x)) continue;
+    const f = Object.assign({id, o: []}, e.f);
+    if (!f.tm) { f.gone = 1; f.o = []; } else { f.added = 1; f.o = Array.isArray(f.o) ? f.o : []; }
     FILMS.push(f);
     BY.set(id, f);
     FEAT.set(id, features(f));
@@ -347,6 +385,14 @@ function avail(f) {
 /* Film data can come from other people (profiles, shared lists), so links are only ever built on known hosts. */
 const safePath = p => typeof p === "string" && /^\/[a-z]{2}\/[a-z0-9-]+(\/[a-z0-9-]+)*$/.test(p);
 const jwLink = f => safePath(f.jw) ? "https://www.justwatch.com" + f.jw : "https://www.justwatch.com/uk/search?q=" + encodeURIComponent(f.t);
+/* The services you pay for, in words: "Netflix, Prime Video and 3 more, or free". */
+function servicesPhrase() {
+  const own = OWNABLE.filter(k => cfg.svc[k]), both = own.includes("hbo") && own.includes("nowe");
+  const names = own.filter(k => !(both && k === "hbo")).map(k => both && k === "nowe" ? "NOW" : SVC[k].n);
+  const list = names.length > 3 ? `${names.slice(0, 3).join(", ")} and ${names.length - 3} more` : andList(names);
+  if (!names.length) return cfg.free ? "free TV" : "";
+  return list + (cfg.free ? ", or free" : "");
+}
 
 /* ---------- Filtering and ranking ---------- */
 const isCandidate = f => { const e = eff(f.id); return !e.s && !e.seen && !e.x && !f.gone; };
@@ -383,6 +429,8 @@ function svcMatch(f, tok) {
 }
 const onAnySvc = f => !ui.svc.size || [...ui.svc].some(t => svcMatch(f, t));
 const lookup = () => !!(ui.q || ui.dir);
+/* Anything narrowing the list (not the sort, and not English-only, which is a standing preference). */
+const filtering = () => lookup() || !!ui.tag || ui.svc.size > 0 || ui.gore !== "any" || ui.len !== "any";
 /* basic: only the standing preferences (content flags, gore, English only), for Tonight, the strips and the planner.
    loose: only the search and director, so a search can show what the filters hide. skipSvc: everything but services. */
 function passes(f, opts) {
@@ -420,7 +468,7 @@ function diversify(list) {
   return out.concat(defer.map(x => x.f));
 }
 /* For you. Browsing shows unseen films; a search or a director also brings back what you've seen, rated or passed,
-   so nothing you look for vanishes. Returns the list, the films the service chips count against, and how many
+   so nothing you look for vanishes. Returns the list, the films the service filter counts against, and how many
    matches the filters are hiding. */
 function forYouList() {
   const look = lookup(), loose = look && ui.loose;
@@ -457,8 +505,16 @@ function forYouList() {
 
 /* ---------- Rendering: shared pieces ---------- */
 const posterOk = f => f.px && typeof f.jid === "string" && /^[a-z]{1,4}\d{1,12}$/.test(f.jid);
+const TP_RE = /^\/[A-Za-z0-9_-]{6,64}\.(jpg|png)$/;
+/* Self-hosted JustWatch thumbnails; films added from TMDB use TMDB's poster through our own image proxy until then. */
+function posterSrc(f, big) {
+  if (posterOk(f)) return `/p/${f.jid}.webp`;
+  if (typeof f.tp === "string" && TP_RE.test(f.tp)) return `/api/img/${big ? "w342" : "w154"}${f.tp}`;
+  return null;
+}
 function posterHTML(f, cls, w, h) {
-  return posterOk(f) ? `<img class="${cls}" src="/p/${esc(f.jid)}.webp" alt="" loading="lazy" decoding="async" width="${w}" height="${h}">`
+  const src = posterSrc(f, w > 80);
+  return src ? `<img class="${cls}" src="${esc(src)}" alt="" loading="lazy" decoding="async" width="${w}" height="${h}">`
     : `<span class="${cls} blank" aria-hidden="true">?</span>`;
 }
 function matchClass(m) { return m >= 85 ? "hot" : m < 50 ? "cool" : ""; }
@@ -483,12 +539,13 @@ function watchHTML(f, a) {
   if (sub) return offerA(f, sub, "other", `On ${esc(svcName(sub[0]))}`);
   if (f.buy) return `<a class="watch rent" href="${esc(jwLink(f))}" target="_blank" rel="noopener noreferrer">Buy £${f.buy[0].toFixed(2)}</a>`;
   if (f.cin) return `<span class="watch other">In cinemas</span>`;
+  if (f.added) return `<a class="watch other" href="${esc(jwLink(f))}" target="_blank" rel="noopener noreferrer">Check JustWatch</a>`;
   return `<span class="watch none">Not streaming in the UK</span>`;
 }
-function factsHTML(f) {
+function factsHTML(f, full) {
   const bits = [];
   if (typeof f.im === "number") bits.push(`<span>IMDb <b>${f.im.toFixed(1)}</b></span>`);
-  if (typeof f.rt === "number") bits.push(`<span>RT <b>${f.rt}%</b></span>`);
+  if (typeof f.rt === "number" && (full || wide())) bits.push(`<span>RT <b>${f.rt}%</b></span>`);
   if (f.rn) bits.push(`<span>${runtime(f.rn)}</span>`);
   if (f.lg) bits.push(`<span class="lang" title="Original language: subtitled">${esc(langName(f.lg))}</span>`);
   const g = f.g || "M";
@@ -505,6 +562,7 @@ function badgesHTML(f, a) {
   if (e.x) b.push(`<span class="badge">Passed</span>`);
   if (f.p && !isDone(e)) b.push(`<span class="badge pick">Start here</span>`);
   if (ui.wild.has(f.id)) b.push(`<span class="badge wild" title="Picked to test something the model hasn't learned yet">Wildcard</span>`);
+  if (f.added) b.push(`<span class="badge" title="Added from TMDB. Full UK availability arrives with tomorrow morning's refresh.">Added</span>`);
   if (f.nw && daysUntil(f.nw[0]) >= -NEW_DAYS && (cfg.svc[f.nw[1]] || (cfg.free && isFree(f.nw[1])))) b.push(`<span class="badge new">New on ${esc(svcName(f.nw[1]))}</span>`);
   if (a.leave && daysUntil(a.leave) <= SOON_DAYS) b.push(`<span class="badge leave">Leaves ${esc(shortDate(a.leave))}</span>`);
   if (f.cin && !a.tonight) b.push(`<span class="badge">In cinemas</span>`);
@@ -529,34 +587,40 @@ function actsHTML(f) {
     `<button type="button" class="act quiet" data-act="pass" aria-pressed="${!!e.x}" title="${e.x ? "Undo pass" : "Not for me"} (x)">${e.x ? "Passed" : "Pass"}</button>` +
     `<button type="button" class="act" data-act="seen" title="Seen it: rate it (s, or 1–9 and 0)">Seen it</button>`;
 }
-function rowHTML(f) {
-  const e = eff(f.id), a = avail(f), open = ui.open.has(f.id), done = isDone(e);
-  const pitch = f.w || f.d || "";
-  let left, line;
-  if (e.s) left = `<div class="m sc ${scoreClass(e.s)}" title="Your rating: ${e.s}/10, ${esc(SCORE_WORD[e.s])}"><b>${e.s}</b><small>/10</small></div>`;
-  else if (e.seen) left = `<div class="m" title="Seen, not rated yet"><b class="cool">--</b></div>`;
-  else left = `<div class="m" title="Predicted match"><b class="${matchClass(f._m)}">${f._m}</b><small>%</small></div>`;
-  if (done) {
-    line = (f.tg || []).concat(f.ta || []).slice(0, 4).map(t => `<span>${esc(TAGS[t] || t)}</span>`).join("");
-  } else {
-    const r = reasons(f);
-    line = r.pos.map(x => `<span class="p">${esc(x)}</span>`).join("") + r.neg.map(x => `<span class="n">${esc(x)}</span>`).join("") +
-      r.flags.map(x => `<span class="f">${esc(x)}</span>`).join("");
-  }
-  return `<article class="film${open ? " open" : ""}${done ? " done" : ""}${ui.focus === f.id ? " is-focus" : ""}" data-id="${esc(f.id)}" tabindex="-1">
-    ${left}
-    ${posterHTML(f, "pst", 46, 69)}
+/* The match number (or your score) down the left edge. */
+function leftHTML(f) {
+  const e = eff(f.id);
+  if (e.s) return `<div class="m sc ${scoreClass(e.s)}" title="Your rating: ${e.s}/10, ${esc(SCORE_WORD[e.s])}"><b>${e.s}</b><small>/10</small></div>`;
+  if (e.seen) return `<div class="m" title="Seen, not rated yet"><b class="cool">--</b></div>`;
+  return `<div class="m" title="Predicted match: how well it fits your taste"><b class="${matchClass(f._m)}">${f._m}</b><small>%</small></div>`;
+}
+function whyHTML(f) {
+  if (isDone(eff(f.id))) return (f.tg || []).concat(f.ta || []).slice(0, 4).map(t => `<span>${esc(TAGS[t] || t)}</span>`).join("");
+  const r = reasons(f);
+  return r.pos.map(x => `<span class="p">${esc(x)}</span>`).join("") + r.neg.map(x => `<span class="n">${esc(x)}</span>`).join("") +
+    r.flags.map(x => `<span class="f">${esc(x)}</span>`).join("");
+}
+/* A film in a list: compact. The full synopsis, where to watch, tags and the rest open in the details sheet. */
+function rowHTML(f, opts) {
+  const o = opts || {}, e = eff(f.id), a = avail(f), done = isDone(e);
+  const badges = badgesHTML(f, a), line = o.line !== undefined ? o.line : whyHTML(f), pitch = f.w || f.d || "";
+  return `<article class="film${done ? " done" : ""}${ui.focus === f.id ? " is-focus" : ""}" data-id="${esc(f.id)}" tabindex="-1">
+    ${o.left || leftHTML(f)}
+    <button type="button" class="pstb" data-act="open" tabindex="-1" aria-hidden="true">${posterHTML(f, "pst", 46, 69)}</button>
     <div class="main">
-      <h3><button type="button" class="ttl" data-act="open" aria-expanded="${open}">${esc(f.t)}</button><span class="yr">${esc(f.y || "")}</span>${dirHTML(f)}${badgesHTML(f, a)}</h3>
+      <h3><button type="button" class="ttl" data-act="open" aria-haspopup="dialog">${esc(f.t)}</button><span class="yr">${esc(f.y || "")}</span></h3>
+      <p class="sub1">${dirHTML(f)}${factsHTML(f)}</p>
+      ${badges ? `<p class="badges">${badges}</p>` : ""}
       ${pitch ? `<p class="pitch">${esc(pitch)}</p>` : ""}
-      <div class="meta2">${line ? `<p class="why">${line}</p>` : ""}${factsHTML(f)}</div>
+      ${line ? `<p class="why">${line}</p>` : ""}
     </div>
-    <div class="side"><span class="wbox">${watchHTML(f, a)}</span><span class="acts">${actsHTML(f)}</span></div>
-    ${open ? detailHTML(f, a) : ""}
+    <div class="side"><span class="wbox">${watchHTML(f, a)}</span><span class="acts">${o.acts || actsHTML(f)}</span></div>
   </article>`;
 }
-function detailHTML(f, a) {
-  const e = eff(f.id), done = isDone(e);
+
+/* ---------- The details sheet ---------- */
+function filmSheetHTML(f) {
+  const e = eff(f.id), a = avail(f), done = isDone(e);
   const offers = [];
   a.own.forEach(o => offers.push(`<li><a class="own" href="${esc(o[1] || jwLink(f))}" target="_blank" rel="noopener noreferrer">${esc(svcName(o[0]))}</a><small>${o[2] ? "until " + esc(shortDate(o[2])) : "yours"}</small></li>`));
   a.free.forEach(o => offers.push(`<li><a href="${esc(o[1] || jwLink(f))}" target="_blank" rel="noopener noreferrer">${esc(svcName(o[0]))}</a><small>free${o[0] === "bbc" ? ", TV licence" : ""}${o[2] ? " until " + esc(shortDate(o[2])) : ""}</small></li>`));
@@ -566,14 +630,15 @@ function detailHTML(f, a) {
   });
   if (f.rent) offers.push(`<li>${f.rent[2] ? `<a href="${esc(f.rent[2])}" target="_blank" rel="noopener noreferrer">Rent on ${esc(f.rent[1] || "store")}</a>` : "Rent"}<small>£${f.rent[0].toFixed(2)}</small></li>`);
   if (f.buy) offers.push(`<li>Buy on ${esc(f.buy[1] || "store")}<small>£${f.buy[0].toFixed(2)}</small></li>`);
-  if (!offers.length) offers.push(f.gone ? `<li>No longer in the daily pool. Check JustWatch for where it streams now.</li>` : `<li>Not streaming, rentable or in cinemas in the UK right now</li>`);
+  if (!offers.length) offers.push(f.gone ? `<li>No longer in the daily pool. Check JustWatch for where it streams now.</li>`
+    : f.added ? `<li>Nothing listed yet. Tomorrow morning’s refresh checks every UK service.</li>` : `<li>Not streaming, rentable or in cinemas in the UK right now</li>`);
   const tags = [...(f.tg || []).map(t => [t, 0]), ...(f.ta || []).map(t => [t, 1])].map(([t, auto]) => {
     const v = M.aff.get("t:" + t) || 0;
-    return `<button type="button" class="tag${auto ? " auto" : ""}${v > 0.3 ? " pos" : v < -0.3 ? " neg" : ""}" data-act="tag" data-key="t:${esc(t)}" title="${auto ? "Auto-tagged. " : ""}Your affinity ${v >= 0 ? "+" : ""}${v.toFixed(2)}">${esc(TAGS[t] || t)}</button>`;
+    return `<button type="button" class="tag${auto ? " auto" : ""}${v > 0.3 ? " pos" : v < -0.3 ? " neg" : ""}" data-act="tag" data-key="t:${esc(t)}" title="${auto ? "Auto-tagged. " : ""}Your affinity ${v >= 0 ? "+" : ""}${v.toFixed(2)}. Tap to see more like it.">${esc(TAGS[t] || t)}</button>`;
   }).join("");
   const sims = [...(NEIGH.get(f.id) || [])].map(id => BY.get(id)).filter(Boolean)
     .sort((x, y) => (sig(eff(y.id)) || 0) - (sig(eff(x.id)) || 0) || y._T - x._T).slice(0, 8)
-    .map(s => { const se = eff(s.id); return `<button type="button" data-act="jump" data-id2="${esc(s.id)}">${esc(s.t)} <span class="${se.s ? "r" : ""}">${se.s ? se.s + "/10" : s._m + "%"}</span></button>`; }).join("");
+    .map(s => { const se = eff(s.id); return `<button type="button" data-act="openid" data-id2="${esc(s.id)}">${esc(s.t)} <span class="${se.s ? "r" : ""}">${se.s ? se.s + "/10" : s._m + "%"}</span></button>`; }).join("");
   const meta = [];
   if (e.s) meta.push(`<dt>Your rating</dt><dd><b class="${scoreClass(e.s)}">${e.s}/10</b> ${esc(SCORE_WORD[e.s])}<small>${e.src === "profile" ? " · imported profile rating" : e.t ? " · " + esc(new Date(e.t).toLocaleDateString("en-GB", {day: "numeric", month: "short", year: "numeric"})) : ""}</small></dd>`);
   if ((f.dir || []).length) meta.push(`<dt>Director</dt><dd>${f.dir.map(d => `<button type="button" class="tag" data-act="dir" data-key="${esc(d)}" title="Only films by ${esc(d)}">${esc(d)}</button>`).join(" ")}</dd>`);
@@ -582,137 +647,245 @@ function detailHTML(f, a) {
   if ((f.co || []).length) meta.push(`<dt>Made in</dt><dd>${esc(f.co.join(", "))}</dd>`);
   if (f.ce) meta.push(`<dt>Certificate</dt><dd>${esc(f.ce)}</dd>`);
   if (f.rn) meta.push(`<dt>Runtime</dt><dd>${runtime(f.rn)}</dd>`);
+  if (typeof f.rt === "number") meta.push(`<dt>Rotten Tomatoes</dt><dd>${f.rt}%</dd>`);
   if (f.aka) meta.push(`<dt>Also</dt><dd>${esc(f.aka)}</dd>`);
   const links = [`<a href="${esc(jwLink(f))}" target="_blank" rel="noopener noreferrer">JustWatch</a>`];
   if (/^tt\d{5,10}$/.test(f.imdb || "")) links.push(`<a href="https://www.imdb.com/title/${esc(f.imdb)}/" target="_blank" rel="noopener noreferrer">IMDb</a>`, `<a href="https://letterboxd.com/imdb/${esc(f.imdb)}/" target="_blank" rel="noopener noreferrer">Letterboxd</a>`);
+  if (Number.isInteger(f.tm)) links.push(`<a href="https://www.themoviedb.org/movie/${f.tm}" target="_blank" rel="noopener noreferrer">TMDB</a>`);
   links.push(`<a href="https://www.youtube.com/results?search_query=${encodeURIComponent(f.t + " " + (f.y || "") + " trailer")}" target="_blank" rel="noopener noreferrer">Trailer</a>`);
   const pct = n => (n >= 0 ? "+" : "−") + Math.abs(n).toFixed(2);
-  const synopsis = f.w && f.d ? `<h4>Synopsis</h4><p>${esc(f.d)}</p>` : !f.w && !f.d ? `<h4>Synopsis</h4><p class="hint">No synopsis saved for this one.</p>` : "";
-  return `<div class="detail">
-    <div>
-      ${synopsis}
-      <h4>Tags</h4><div class="tagrow">${tags || '<span class="hint">None yet</span>'}</div>
-      ${sims ? `<h4>Similar films</h4><div class="simrow">${sims}</div>` : ""}
-      ${done ? "" : `<h4>Why ${f._m}%</h4>
+  const r = done ? null : reasons(f);
+  const why = r ? r.pos.map(x => `<span class="p">${esc(x)}</span>`).join("") + r.neg.map(x => `<span class="n">${esc(x)}</span>`).join("") + r.flags.map(x => `<span class="f">${esc(x)}</span>`).join("") : "";
+  const score = e.s ? `<span class="fs-score ${scoreClass(e.s)}"><b>${e.s}</b>/10 <small>${esc(SCORE_WORD[e.s])}</small></span>`
+    : e.seen ? `<span class="fs-score"><b class="cool">--</b> <small>Seen, not rated</small></span>`
+    : `<span class="fs-score"><b class="${matchClass(f._m)}">${f._m}%</b> <small>match for you</small></span>`;
+  return `<div class="fs-head">
+      ${posterHTML(f, "fs-pst", 110, 165)}
+      <div class="fs-ttl">
+        ${score}
+        <h2 id="fd-h">${esc(f.t)} <span class="yr">${esc(f.y || "")}</span></h2>
+        <p class="sub1">${dirHTML(f)}${factsHTML(f, true)}</p>
+        <p class="badges">${badgesHTML(f, a)}</p>
+      </div>
+    </div>
+    <div class="fs-acts"><span class="wbox">${watchHTML(f, a)}</span><span class="acts">${actsHTML(f)}</span>
+      ${typeof shareBtnHTML === "function" ? shareBtnHTML(f) : ""}</div>
+    ${f.w ? `<p class="fs-pitch">${esc(f.w)}</p>` : ""}
+    ${f.d ? `<h4>Synopsis</h4><p>${esc(f.d)}</p>` : !f.w ? `<h4>Synopsis</h4><p class="hint">No synopsis saved for this one.</p>` : ""}
+    <h4>Where to watch in the UK</h4><ul class="offers">${offers.join("")}</ul>
+    ${done ? "" : `<h4>Why ${f._m}%</h4>${why ? `<p class="why">${why}</p>` : ""}
       <div class="calc"><span>Taste fit</span><b>${pct(f._fit)}</b><span>Similar films you rated</span><b>${pct(f._nb)}</b><span>Critics</span><b>${pct(f._q)}</b><span>Score</span><b>${pct(f._T)}</b></div>`}
-    </div>
-    <div>
-      <h4>Where to watch in the UK</h4><ul class="offers">${offers.join("")}</ul>
-      ${meta.length ? `<h4>Details</h4><dl>${meta.join("")}</dl>` : ""}
-      ${typeof listPickHTML === "function" ? listPickHTML(f) : ""}
-      <h4>Links</h4><div class="links">${links.join("")}</div>
-    </div>
-  </div>`;
+    <h4>Tags</h4><div class="tagrow">${tags || '<span class="hint">None yet</span>'}</div>
+    ${sims ? `<h4>Similar films</h4><div class="simrow">${sims}</div>` : ""}
+    ${meta.length ? `<h4>Details</h4><dl>${meta.join("")}</dl>` : ""}
+    ${typeof listPickHTML === "function" ? listPickHTML(f) : ""}
+    <h4>Links</h4><div class="links">${links.join("")}</div>`;
+}
+function openFilm(id) {
+  if (!BY.has(id) && ALIAS.has(id)) id = ALIAS.get(id);
+  if (!BY.has(id)) return;
+  const d = $("filmDlg"), was = ui.film;
+  ui.film = id;
+  renderFilmSheet();
+  if (!d.open) { showDlg(d); setTimeout(() => { const c = $("closeFilm"); if (c && !wide()) c.focus({preventScroll: true}); }, 30); }
+  if (was !== id) $("fdBody").scrollTop = 0;
+}
+/* Kept for older calls: opening a film from anywhere now opens its details. */
+const jump = id => openFilm(id);
+function renderFilmSheet() {
+  const box = $("fdBody"), f = ui.film && BY.get(ui.film);
+  if (!box || !f) return;
+  const act = document.activeElement, inside = act && box.contains(act);
+  const sel = inside && act.dataset && act.dataset.act ? `[data-act="${CSS.escape(act.dataset.act)}"]${act.dataset.rate ? `[data-rate="${CSS.escape(act.dataset.rate)}"]` : ""}` : null;
+  const top = box.scrollTop;
+  box.dataset.id = f.id;
+  box.innerHTML = filmSheetHTML(f);
+  box.scrollTop = top;
+  if (sel) { const el = box.querySelector(sel); if (el) el.focus({preventScroll: true}); }
+}
+/* Native dialogs, with the page behind them held still. */
+function showDlg(d) {
+  if (typeof d.showModal === "function") { if (!d.open) d.showModal(); } else d.setAttribute("open", "");
+  document.documentElement.classList.add("modal-open");
+}
+function hideDlg(d) {
+  if (!d) return;
+  if (typeof d.close === "function") { if (d.open) d.close(); } else d.removeAttribute("open");
+}
+function dlgClosed() {
+  if (![...document.querySelectorAll("dialog")].some(d => d.open)) document.documentElement.classList.remove("modal-open");
 }
 
 /* ---------- Views ---------- */
 function renderTonight() {
+  const box = $("tonight"), phrase = servicesPhrase();
+  const lab = (sub, roll) => `<div class="lab"><h2><i class="rec" aria-hidden="true"></i>Watch tonight</h2>${roll ? `<button type="button" class="act quiet roll" data-act="roll" title="Another pick (r)">Another</button>` : ""}<p class="sub">${sub}</p></div>`;
+  if (!phrase) {
+    box.innerHTML = lab(`Tell the Dread List which services you pay for, and this picks the best unseen film you can watch right now.`) +
+      `<p class="none"><button type="button" class="btn" data-set-open="services">Pick your services</button></p>`;
+    return;
+  }
+  const change = `<button type="button" class="linkish" data-set-open="services">Change</button>`;
   const pool = FILMS.filter(f => isCandidate(f) && passes(f, {basic: true}) && avail(f).tonight).sort(SORTS.match);
-  const box = $("tonight");
-  if (!pool.length) { box.innerHTML = `<div class="lab"><h2><i class="rec" aria-hidden="true"></i>Tonight</h2></div><p class="none">Nothing unseen is on your services right now. Check the services you pay for in Settings.</p>`; return; }
+  if (!pool.length) { box.innerHTML = lab(`Your best unseen match on ${esc(phrase)}. ${change}`) + `<p class="none">Nothing unseen is on your services right now.</p>`; return; }
   const top = pool.slice(0, 6), f = top[ui.roll % top.length], a = avail(f);
-  box.innerHTML = `<div class="lab"><h2><i class="rec" aria-hidden="true"></i>Tonight’s tape</h2><span class="sub">Best match you can watch now</span>
-      <button type="button" class="act quiet roll" data-act="roll" title="Roll again (r)">Roll again</button></div>
-    ${posterOk(f) ? `<img src="/p/${esc(f.jid)}.webp" alt="" width="92" height="138">` : ""}
-    <div class="film-lite" data-id="${esc(f.id)}">
-      <p class="tt"><span class="big">${f._m}%</span> <button type="button" data-act="jumpopen" data-id2="${esc(f.id)}">${esc(f.t)}</button> <span class="yr">${esc(f.y || "")}</span></p>
-      <div class="meta">${watchHTML(f, a)}${factsHTML(f)}</div>
-      <p>${esc(f.w || f.d || "")}</p>
-      <div class="acts" data-id="${esc(f.id)}">${actsHTML(f)}</div>
+  box.innerHTML = lab(`Your best unseen match on ${esc(phrase)}. ${change}`, top.length > 1) +
+    `<div class="film-lite" data-id="${esc(f.id)}">
+      <button type="button" class="tpst" data-act="open" tabindex="-1" aria-hidden="true">${posterHTML(f, "", 92, 138)}</button>
+      <div class="tbody">
+        <p class="tt"><span class="big">${f._m}%</span> <button type="button" data-act="open" aria-haspopup="dialog">${esc(f.t)}</button> <span class="yr">${esc(f.y || "")}</span></p>
+        <div class="meta">${watchHTML(f, a)}${factsHTML(f)}</div>
+        <p class="tp">${esc(f.w || f.d || "")}</p>
+        <div class="acts">${actsHTML(f)}</div>
+      </div>
     </div>`;
 }
 function renderStrips() {
   const c = FILMS.filter(f => isCandidate(f) && passes(f, {basic: true}));
   const fresh = c.filter(f => f.nw && daysUntil(f.nw[0]) >= -NEW_DAYS && (cfg.svc[f.nw[1]] || (cfg.free && isFree(f.nw[1]))) && (f.o || []).some(o => o[0] === f.nw[1]))
-    .sort(SORTS.match).slice(0, 6);
-  const leaving = c.map(f => [f, avail(f).leave]).filter(([, l]) => l && daysUntil(l) <= SOON_DAYS).sort((x, y) => y[0]._T - x[0]._T).slice(0, 6);
-  const li = (f, when, soon) => `<li><button type="button" data-act="jumpopen" data-id2="${esc(f.id)}"><span class="mm ${matchClass(f._m)}">${f._m}</span>${posterHTML(f, "", 28, 42)}<span class="st">${esc(f.t)}<small>${esc(f.y || "")}</small></span><span class="when${soon ? " soon" : ""}">${esc(when)}</span></button></li>`;
-  $("strips").innerHTML = `<section class="strip"><h2>New on your services</h2><p class="sub">Added in the last two weeks, best matches first</p>
+    .sort(SORTS.match).slice(0, 8);
+  const leaving = c.map(f => [f, avail(f).leave]).filter(([, l]) => l && daysUntil(l) <= SOON_DAYS).sort((x, y) => y[0]._T - x[0]._T).slice(0, 8);
+  const li = (f, when, soon) => `<li><button type="button" data-act="openid" data-id2="${esc(f.id)}" aria-haspopup="dialog">${posterHTML(f, "", 56, 84)}<span class="mm ${matchClass(f._m)}">${f._m}%</span><span class="st">${esc(f.t)}<small>${esc(f.y || "")}</small></span><span class="when${soon ? " soon" : ""}">${esc(when)}</span></button></li>`;
+  $("strips").innerHTML = `<section class="strip"><h2>New on your services</h2><p class="sub">Added in the last two weeks</p>
       ${fresh.length ? `<ol>${fresh.map(f => li(f, `${svcName(f.nw[1])}, ${shortDate(f.nw[0])}`)).join("")}</ol>` : `<p class="empty">Nothing new that fits you this fortnight.</p>`}</section>
-    <section class="strip"><h2>Leaving soon</h2><p class="sub">Last chance on your services in the next 30 days</p>
+    <section class="strip"><h2>Leaving soon</h2><p class="sub">Last chance on your services</p>
       ${leaving.length ? `<ol>${leaving.map(([f, l]) => li(f, `Leaves ${shortDate(l)}`, daysUntil(l) <= 7)).join("")}</ol>` : `<p class="empty">Nothing you’d want is leaving this month.</p>`}</section>`;
 }
-/* ---------- The filter bar (For you and the Watchlist) ---------- */
-const SORT_OPTS = [["match", "Best match"], ["imdb", "IMDb"], ["rt", "Rotten Tomatoes"], ["new", "Newest"], ["short", "Shortest"], ["leaving", "Leaving soonest"]];
-/* Service chips: Tonight, each service you pay for (NOW and HBO Max as one), Free and Rent. */
+/* ---------- Search and filters (For you and the Watchlist) ----------
+   One search box for titles, directors and tags, with suggestions; filter buttons underneath. Where to watch opens a
+   sheet (it takes several services at once); gore, length, language and sort are native pickers. */
+const GORE_OPTS = [["any", "Any gore"], ["H", "Gore ≤ high"], ["M", "Gore ≤ medium"], ["L", "Low gore"]];
+const LEN_OPTS = [["any", "Any length"], ["100", "Under 100 min"]];
+const LANG_OPTS = [["0", "Any language"], ["1", "English only"]];
+const SORT_OPTS = [["match", "Best match"], ["imdb", "IMDb score"], ["rt", "RT score"], ["new", "Newest"], ["short", "Shortest"], ["leaving", "Leaving soon"]];
+const RSORT_OPTS = [["recent", "Recently rated"], ["high", "Highest first"], ["low", "Lowest first"], ["az", "A–Z"], ["year", "Newest film"]];
+/* Service tokens: Watch tonight, each service you pay for (NOW and HBO Max as one), Free and Rent. */
 function svcTokens() {
   const own = OWNABLE.filter(k => cfg.svc[k]), both = own.includes("hbo") && own.includes("nowe");
-  const toks = [["tonight", "Tonight", "On your services, or free"]];
+  const toks = [["tonight", "Watch tonight", "On the services you pay for, or free"]];
   own.forEach(k => {
     if (both && k === "nowe") return;
-    toks.push(both && k === "hbo" ? ["hbo|nowe", "NOW & HBO Max", "NOW Entertainment, which includes HBO Max"] : [k, SVC[k].n, ""]);
+    toks.push(both && k === "hbo" ? ["hbo|nowe", "NOW & HBO Max", "NOW Entertainment, which includes HBO Max"] : [k, SVC[k].n, "Yours"]);
   });
-  toks.push(["free", "Free", "BBC iPlayer, Channel 4, ITVX, My5, Tubi and the other free services"], ["rent", "Rent", "Not on your services, but rentable"]);
+  toks.push(["free", "Free", "BBC iPlayer, Channel 4, ITVX, My5, Tubi and more"], ["rent", "Rent", "Not on your services, but rentable"]);
   return toks;
 }
-const tokName = k => k === "subs" ? "Other subscriptions" : k === "tonight" ? "Tonight" : k === "free" ? "Free" : k === "rent" ? "Rent" : k.split("|").map(svcName).join(" & ");
-function chipHTML(k, label, tip, removable) {
-  return `<button type="button" class="chip${removable ? " rm" : ""}" data-act="svc" data-key="${esc(k)}" aria-pressed="${ui.svc.has(k)}"${tip ? ` title="${esc(tip)}"` : ""}>${esc(label)}<span class="c" data-c="${esc(k)}"></span>${removable ? `<b aria-hidden="true">×</b><span class="sr">Remove</span>` : ""}</button>`;
-}
-/* Every other service in the pool, most films first, to add as a chip. */
+const tokName = k => k === "subs" ? "Other subscriptions" : k === "tonight" ? "Watch tonight" : k === "free" ? "Free" : k === "rent" ? "Rent" : k.split("|").map(svcName).join(" & ");
+/* Every other service in the pool, most films first, to add to the filter. */
 function moreSvcHTML(fixedKeys) {
   const n = new Map();
   FILMS.forEach(f => { if (!f.gone) (f.o || []).forEach(o => { if (!fixedKeys.has(o[0]) && !ui.svc.has(o[0])) n.set(o[0], (n.get(o[0]) || 0) + 1); }); });
   const groups = [["Subscriptions", k => !isFree(k) && !k.startsWith("ch:")], ["Prime Video channels", k => k.startsWith("ch:")], ["Free services", k => isFree(k)]];
-  return `<select id="svcMore" aria-label="Filter by another service"><option value="">+ More</option>` +
+  return `<select id="svcMore" aria-label="Add another service"><option value="">Add another service…</option>` +
     (ui.svc.has("subs") ? "" : `<option value="subs">Any subscription you don’t have</option>`) +
     groups.map(([label, test]) => {
       const ks = [...n].filter(([k]) => test(k)).sort((a, b) => b[1] - a[1] || svcName(a[0]).localeCompare(svcName(b[0])));
       return ks.length ? `<optgroup label="${label}">${ks.map(([k, c]) => `<option value="${esc(k)}">${esc(svcName(k))} · ${c}</option>`).join("")}</optgroup>` : "";
     }).join("") + `</select>`;
 }
+function pillSelect(id, label, opts, cur, def) {
+  return `<label class="pill sel${cur !== def ? " on" : ""}"><span class="sr">${esc(label)}</span><select id="${id}">${opts.map(([v, l]) => `<option value="${esc(v)}"${cur === v ? " selected" : ""}>${esc(l)}</option>`).join("")}</select></label>`;
+}
+function whereLabel() {
+  if (!ui.svc.size) return "Where to watch";
+  const names = [...ui.svc].map(tokName);
+  return names.length > 1 ? `${names[0]} +${names.length - 1}` : names[0];
+}
+const SEARCH_ICON = `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></svg>`;
 function barHTML() {
-  const seg = (name, opts, cur) => `<span class="seg" role="group" aria-label="${esc(name)}">${opts.map(([v, l]) => `<button type="button" data-set="${esc(name)}" data-v="${esc(v)}" aria-pressed="${cur === v}">${esc(l)}</button>`).join("")}</span>`;
-  const toks = svcTokens(), fixed = new Set(toks.map(t => t[0])), fixedKeys = new Set(toks.flatMap(t => t[0].split("|")));
-  const extra = [...ui.svc].filter(k => !fixed.has(k));
-  return `<div class="search"><input type="search" id="q" placeholder="Search titles, directors, tags, languages" value="${esc(ui.q)}" aria-label="Search" autocomplete="off"></div>
-    <div class="dirbox"><input type="search" id="dirq" list="dirList" placeholder="Any director" value="${esc(ui.dir)}" aria-label="Filter by director" autocomplete="off" spellcheck="false"></div>
-    <div class="filters svcrow" role="group" aria-label="Where to watch"><span class="lbl">Where</span>
-      <button type="button" class="chip" data-act="svcall" aria-pressed="${!ui.svc.size}">Anywhere</button>${toks.map(([k, l, t]) => chipHTML(k, l, t)).join("")}${extra.map(k => chipHTML(k, tokName(k), "", true)).join("")}${moreSvcHTML(fixedKeys)}</div>
-    <div class="filters">
-      <div class="grp"><span>Gore</span>${seg("gore", [["any", "Any"], ["H", "≤ High"], ["M", "≤ Med"], ["L", "Low"]], ui.gore)}</div>
-      <div class="grp"><span>Length</span>${seg("len", [["any", "Any"], ["100", "≤ 100m"]], ui.len)}</div>
-      <div class="grp"><span>Language</span><span class="seg" role="group" aria-label="Language"><button type="button" data-act="en" data-v="0" aria-pressed="${!cfg.en}">Any</button><button type="button" data-act="en" data-v="1" aria-pressed="${!!cfg.en}" title="Hide films that aren’t in English. Remembered and synced.">English only</button></span></div>
-      <div class="grp"><label for="sort"><span>Sort</span></label> <select id="sort">${SORT_OPTS.map(([v, l]) => `<option value="${v}"${ui.sort === v ? " selected" : ""}>${l}</option>`).join("")}</select></div>
+  return `<div class="sq">${SEARCH_ICON}<input type="search" id="q" placeholder="Search films, directors, subgenres" value="${esc(ui.q)}" aria-label="Search films, directors and subgenres" autocomplete="off" spellcheck="false" enterkeyhint="search" aria-autocomplete="list" aria-controls="suggest">
+      <div class="suggest" id="suggest" hidden></div></div>
+    <div class="pills" role="group" aria-label="Filters and sort">
+      <button type="button" class="pill${ui.svc.size ? " on" : ""}" data-sheet="where" aria-haspopup="dialog">${esc(whereLabel())}</button>
+      ${pillSelect("fGore", "Gore", GORE_OPTS, ui.gore, "any")}
+      ${pillSelect("fLen", "Length", LEN_OPTS, ui.len, "any")}
+      ${pillSelect("fLang", "Language", LANG_OPTS, cfg.en ? "1" : "0", "0")}
+      ${pillSelect("sort", "Sort", SORT_OPTS, ui.sort, "match")}
     </div>
     <p class="count" id="count"></p>`;
 }
-/* Live counts on the service chips: how many of the films in view each one would leave. */
-function updateSvcCounts(base) {
-  document.querySelectorAll(".view:not([hidden]) .bar [data-c]").forEach(el => {
-    const n = base.filter(f => svcMatch(f, el.dataset.c)).length;
-    el.textContent = n.toLocaleString("en-GB");
-  });
+/* As you type: matching directors and subgenres to filter by, and (with TMDB switched on) a search of every film. */
+function suggestHTML(q) {
+  const k = foldKey(q);
+  if (k.length < 2) return "";
+  const starts = s => { const f = foldKey(s); return f.startsWith(k) || f.split(" ").some(w => w.startsWith(k)); };
+  const dirs = DIRS.filter(([d]) => starts(d)).slice(0, 4);
+  const tags = Object.entries(TAGS).filter(([, l]) => starts(l)).slice(0, 3);
+  let html = "";
+  if (dirs.length) html += `<p class="sg-h">Directors</p>` + dirs.map(([d, c]) => `<button type="button" class="sg" data-act="dir" data-key="${esc(d)}">${esc(d)}<small>${plural(c, "film")}</small></button>`).join("");
+  if (tags.length) html += `<p class="sg-h">Subgenres</p>` + tags.map(([t, l]) => `<button type="button" class="sg" data-act="tag" data-key="t:${esc(t)}">${esc(l)}</button>`).join("");
+  if (typeof findOn === "function" && findOn()) html += `<button type="button" class="sg web" data-act="find">Search every film for “${esc(q.trim())}”<small>Add anything that isn’t in the Dread List yet</small></button>`;
+  return html;
+}
+function showSuggest(on) {
+  const s = $("suggest"), q = $("q");
+  if (!s || !q) return;
+  const html = on ? suggestHTML(q.value) : "";
+  s.innerHTML = html;
+  s.hidden = !html;
 }
 function chipsHTML() {
   const x = (act, label, sr) => `<button type="button" class="chipx" data-act="${act}">${esc(label)} <b aria-hidden="true">×</b><span class="sr">${sr}</span></button>`;
   return (ui.dir ? x("undir", "Dir. " + ui.dir, "Clear the director") : "") + (ui.tag ? x("untag", featLabel(ui.tag), "Clear the tag filter") : "") +
-    (ui.svc.size ? x("svcall", [...ui.svc].map(tokName).join(" or "), "Clear the services") : "");
+    (filtering() ? `<button type="button" class="linkish clearall" data-act="clearall">Clear all</button>` : "");
 }
-
-/* ---------- Lists ---------- */
+/* The Where to watch sheet: tap services on and off; the counts are the films each would leave. */
+function whereSheetHTML() {
+  const toks = svcTokens(), fixed = new Set(toks.map(t => t[0])), fixedKeys = new Set(toks.flatMap(t => t[0].split("|")));
+  const extra = [...ui.svc].filter(k => !fixed.has(k)), base = ui.base || [];
+  const cnt = k => base.filter(f => svcMatch(f, k)).length.toLocaleString("en-GB");
+  const opt = (k, label, tip, removable) => `<button type="button" class="opt" data-act="svc" data-key="${esc(k)}" aria-pressed="${ui.svc.has(k)}"><span>${esc(label)}${tip ? `<small>${esc(tip)}</small>` : ""}</span><span class="c">${removable ? "×" : cnt(k)}</span></button>`;
+  const n = ui.view === "want" ? FILMS.filter(f => { const e = eff(f.id); return e.w && !isDone(e) && passes(f); }).length : forYouList().list.length;
+  return `<p class="hint">Pick one or more. <b>Watch tonight</b> means on the services you pay for, or free.</p>
+    <div class="opts">
+      <button type="button" class="opt" data-act="svcall" aria-pressed="${!ui.svc.size}"><span>Anywhere</span><span class="c">${base.length.toLocaleString("en-GB")}</span></button>
+      ${toks.map(([k, l, t]) => opt(k, l, t)).join("")}${extra.map(k => opt(k, tokName(k), "", true)).join("")}
+    </div>
+    <div class="more-svc">${moreSvcHTML(fixedKeys)}</div>
+    <div class="sheet-foot"><button type="button" class="btn" data-close>Show ${plural(n, "film")}</button><button type="button" class="linkish" data-set-open="services">Change the services you pay for</button></div>`;
+}
+function openSheet(kind) {
+  ui.sheet = kind;
+  const d = $("sheet");
+  $("sheet-h").textContent = kind === "where" ? "Where to watch" : "";
+  renderSheet();
+  showDlg(d);
+}
+function renderSheet() {
+  const d = $("sheet");
+  if (!d || !ui.sheet) return;
+  const act = document.activeElement, inside = act && d.contains(act);
+  const sel = inside && act.dataset && act.dataset.key ? `[data-act="${CSS.escape(act.dataset.act || "")}"][data-key="${CSS.escape(act.dataset.key)}"]` : inside && act.id ? "#" + CSS.escape(act.id) : null;
+  if (ui.sheet === "where") $("sheetBody").innerHTML = whereSheetHTML();
+  if (sel) { const el = d.querySelector(sel); if (el) el.focus({preventScroll: true}); }
+}
 function renderFor(keepBar) {
-  renderTonight();
-  renderStrips();
   if (!keepBar) $("barFor").innerHTML = barHTML();
+  const browsing = !filtering();
+  $("tonight").hidden = !browsing;
+  $("strips").hidden = !browsing;
+  if (browsing) { renderTonight(); renderStrips(); }
   const {list, base, hidden} = forYouList(), shown = list.slice(0, ui.shown), look = lookup();
+  ui.base = base;
   const seen = look ? list.filter(f => isDone(eff(f.id))).length : 0;
-  $("listFor").innerHTML = shown.length ? shown.map(rowHTML).join("") :
-    `<p class="empty">${look ? (hidden ? "No matches with these filters." : `Nothing matches${ui.q ? ` “${esc(ui.q)}”` : ""}.`) : `Nothing matches. ${ui.tag ? "Clear the tag filter" : "Loosen a filter"} to see more.`}</p>`;
-  $("moreFor").hidden = list.length <= ui.shown;
-  updateSvcCounts(base);
   const n = list.length.toLocaleString("en-GB");
-  $("count").innerHTML = (look ? `<span>${n} match${list.length === 1 ? "" : "es"}${seen ? `, ${seen} you’ve seen` : ""}</span>` : `<span>${shown.length} of ${n} unseen films</span>`) + chipsHTML() +
+  $("forHead").innerHTML = browsing ? `<div class="sect"><h2>Ranked for you</h2><span>${n} unseen films, best match first</span></div>` : "";
+  $("listFor").innerHTML = shown.length ? shown.map(f => rowHTML(f)).join("") :
+    `<p class="empty">${look ? (hidden ? "No matches with these filters." : `Nothing in the Dread List matches${ui.q ? ` “${esc(ui.q)}”` : ""}.`) : `Nothing matches. ${ui.tag ? "Clear the tag filter" : "Loosen a filter"} to see more.`}</p>` +
+    (look && ui.q && typeof findOn === "function" && findOn() ? `<p class="empty-find"><button type="button" class="btn" data-act="find">Search every film for “${esc(ui.q)}”</button></p>` : "");
+  $("moreFor").hidden = list.length <= ui.shown;
+  $("count").innerHTML = (browsing ? "" : look ? `<span>${n} match${list.length === 1 ? "" : "es"}${seen ? `, ${seen} you’ve seen` : ""}</span>` : `<span>${shown.length < list.length ? `${shown.length} of ` : ""}${n} unseen film${list.length === 1 ? "" : "s"}</span>`) + chipsHTML() +
     (hidden ? `<button type="button" class="chipx more-x" data-act="loose">+ ${hidden} hidden by filters</button>` : "") +
-    (look && ui.loose ? `<button type="button" class="chipx" data-act="unloose">Filters off <b aria-hidden="true">×</b><span class="sr">Turn the filters back on</span></button>` : "");
+    (look && ui.loose ? `<button type="button" class="chipx" data-act="unloose">Filters off <b aria-hidden="true">×</b><span class="sr">Turn the filters back on</span></button>` : "") +
+    (look && ui.q && list.length && typeof findOn === "function" && findOn() ? `<button type="button" class="linkish" data-act="find">Not here? Search every film</button>` : "");
 }
 function renderWant(keepBar) {
   ui.wild = new Set();
   if (!keepBar) $("barWant").innerHTML = barHTML();
   const all = FILMS.filter(f => { const e = eff(f.id); return e.w && !isDone(e); });
   const base = all.filter(f => passes(f, {skipSvc: true}));
+  ui.base = base;
   const list = base.filter(onAnySvc).sort(SORTS[ui.sort] || SORTS.match);
-  updateSvcCounts(base);
   $("count").innerHTML = `<span>${list.length === all.length ? `${all.length} film${all.length === 1 ? "" : "s"} on your watchlist` : `${list.length} of ${all.length} on your watchlist`}</span>` + chipsHTML();
   if (!all.length) { $("listWant").innerHTML = `<p class="empty">Tap Want on anything in For you and it lands here, ranked by match and grouped by where you can watch it.</p>`; return; }
   if (!list.length) { $("listWant").innerHTML = `<p class="empty">Nothing on your watchlist matches these filters.</p>`; return; }
@@ -721,7 +894,7 @@ function renderWant(keepBar) {
   $("listWant").innerHTML = groups.map(([name, test]) => {
     const g = list.filter(f => !seen.has(f.id) && test(f));
     g.forEach(f => seen.add(f.id));
-    return g.length ? `<div class="sect"><h2>${esc(name)}</h2><span>${g.length}</span></div>` + g.map(rowHTML).join("") : "";
+    return g.length ? `<div class="sect"><h2>${esc(name)}</h2><span>${g.length}${name === "Watch tonight" ? ` · on ${esc(servicesPhrase() || "your services")}` : ""}</span></div>` + g.map(f => rowHTML(f)).join("") : "";
   }).join("");
 }
 const RSORTS = {
@@ -743,19 +916,18 @@ function renderRated(keepHead) {
     for (let s = 1; s <= 10; s++) {
       cols.push(`<button type="button" class="col ${scoreClass(s)}" data-act="rf" data-v="${s}" aria-pressed="${ui.rf === String(s)}" title="${s} · ${esc(SCORE_WORD[s])}: ${counts[s]} film${counts[s] === 1 ? "" : "s"}"${counts[s] ? "" : " disabled"}><em>${counts[s] || ""}</em><i data-h="${(counts[s] / max).toFixed(3)}"></i><span>${s}</span></button>`);
     }
-    $("ratedHead").innerHTML = `<div class="search"><input type="search" id="rq" placeholder="Search your ratings: titles, directors, tags" value="${esc(ui.rq)}" aria-label="Search your ratings" autocomplete="off"></div>
+    $("ratedHead").innerHTML = `<div class="sq">${SEARCH_ICON}<input type="search" id="rq" placeholder="Search your ratings" value="${esc(ui.rq)}" aria-label="Search your ratings" autocomplete="off" spellcheck="false" enterkeyhint="search"></div>
       <div class="hist" role="group" aria-label="Filter by score"><button type="button" class="all" data-act="rf" data-v="all" aria-pressed="${ui.rf === "all"}">All<span>${all.length}</span></button>${cols.join("")}${unrated ? `<button type="button" class="all" data-act="rf" data-v="unrated" aria-pressed="${ui.rf === "unrated"}">Unrated<span>${unrated}</span></button>` : ""}</div>
-      <div class="grp"><label for="rsort"><span>Sort</span></label> <select id="rsort">${[["recent", "Recently rated"], ["high", "Highest first"], ["low", "Lowest first"], ["az", "A–Z"], ["year", "Newest film"]]
-        .map(([v, l]) => `<option value="${v}"${ui.rsort === v ? " selected" : ""}>${l}</option>`).join("")}</select></div>
+      <div class="pills">${pillSelect("rsort", "Sort", RSORT_OPTS, ui.rsort, "recent")}</div>
       <p class="count" id="rcount"></p>`;
     document.querySelectorAll("#ratedHead .hist i").forEach(i => i.style.setProperty("--h", i.dataset.h));
   }
   const rf = ui.rf;
   const list = all.filter(f => { const s = eff(f.id).s; return (rf === "all" || (rf === "unrated" ? !s : s === Number(rf))) && (!ui.rq || matchesQuery(f, ui.rq)); })
     .sort(RSORTS[ui.rsort] || RSORTS.recent);
-  $("listRated").innerHTML = list.length ? list.map(rowHTML).join("") : `<p class="empty">${all.length ? "Nothing here matches." : "No ratings yet. Press Seen it on anything you’ve watched."}</p>`;
+  $("listRated").innerHTML = list.length ? list.map(f => rowHTML(f)).join("") : `<p class="empty">${all.length ? "Nothing here matches." : "No ratings yet. Press Seen it on anything you’ve watched."}</p>`;
   $("rcount").innerHTML = `<span>${list.length === all.length ? `${all.length} film${all.length === 1 ? "" : "s"}` : `${list.length} of ${all.length}`}${n ? `, average ${(sum / n).toFixed(1)}` : ""}</span>` +
-    `<span class="sub">Tap a title for the synopsis. Change a score and the model relearns instantly; “imported profile rating” means it came from the original single-user page.</span>`;
+    `<span class="sub">Change a score and the model relearns instantly.</span>`;
 }
 function barsHTML(rows, max) {
   return `<ul class="bars">${rows.map(([k, v, n]) => {
@@ -801,7 +973,7 @@ function renderTaste() {
   $("taste").innerHTML = `
     <div class="stats">
       <div><b>${rated.length}</b><span>rated</span></div><div><b>${avg}</b><span>average score</span></div><div><b>${wants}</b><span>wanted</span></div><div><b>${passed}</b><span>passed</span></div>
-      <div><b>${FILMS.length.toLocaleString("en-GB")}</b><span>films in the pool</span></div><div><b>${tonight}</b><span>unseen on your services</span></div>
+      <div><b>${FILMS.filter(f => !f.gone && !f.added).length.toLocaleString("en-GB")}</b><span>films in the pool</span></div><div><b>${tonight}</b><span>unseen, watch tonight</span></div>
     </div>
     <div class="taste-grid">
       <section><h2>What pulls you in</h2><p>Learned from your ratings, wants and passes. Tap one to filter For you by it.</p>${pos.length ? barsHTML(pos, 2) : `<p class="hint">Rate a few films to see this.</p>`}</section>
@@ -818,7 +990,7 @@ function renderTaste() {
     <div class="how">
       <p><b>How the recommendations work.</b> Every film is a bag of features: subgenre tags (hand-picked, from Wikidata and from the synopsis), director, decade, where it’s from, whether it’s subtitled, gore level and length. Each button you press is a signal: scores run from −2.5 for a 1 (Hated) through −0.5 for a 5 (Meh) and +1 for a 7 (Liked) to +2.5 for a 10 (Favourite); Want is +0.6 and Pass −1. Your affinity for a feature is the average signal across films that have it, pulled toward zero until there’s enough evidence.</p>
       <p>A film’s score adds up its feature affinities, a boost when JustWatch lists it as similar to something you rated, and a small nudge from IMDb and Rotten Tomatoes. Every seventh slot is a wildcard: a well-reviewed film built from features you haven’t rated yet, so the model keeps learning instead of narrowing.</p>
-      <p>The pool rebuilds every morning from JustWatch UK: popular, trending and newly added horror, everything near films people chose to share (Settings, Help grow the pool), and the hand-picked list. ${FILMS.filter(f => f.cur).length} films are hand-picked.</p>
+      <p>The pool rebuilds every morning from JustWatch UK: popular, trending and newly added horror, everything near films people chose to share (Settings, Help grow the pool), films people added from TMDB, and the hand-picked list. ${FILMS.filter(f => f.cur).length} films are hand-picked. <a href="/about">More about the Dread List</a></p>
     </div>`;
   document.querySelectorAll("#taste .trk i").forEach(i => i.style.setProperty("--w", i.dataset.w));
 }
@@ -837,11 +1009,14 @@ function refresh(opts) {
   scoreAll();
   counts();
   renderView(opts);
+  if (ui.film && $("filmDlg").open) renderFilmSheet();
+  if (ui.sheet && $("sheet").open) renderSheet();
 }
 function renderView(opts) {
   const v = ui.view, keep = !!(opts && opts.keepBar);
   document.querySelectorAll(".view").forEach(s => { s.hidden = s.id !== "view-" + v; });
   document.querySelectorAll(".tabs a").forEach(a => a.setAttribute("aria-current", a.dataset.view === v ? "page" : "false"));
+  document.body.dataset.view = v;
   // The bar lives in whichever of For you and the Watchlist is showing, so its ids stay unique.
   if (v !== "for") $("barFor").innerHTML = "";
   if (v !== "want") $("barWant").innerHTML = "";
@@ -851,25 +1026,28 @@ function renderView(opts) {
   else if (v === "rated") renderRated(keep && !!$("rq"));
   else if (v === "together") renderTogether(keep);
   else if (v === "profile") renderProfile(keep);
+  else if (v === "welcome" && typeof renderWelcome === "function") renderWelcome();
   else renderTaste();
   if (opts && opts.keepScroll !== false) window.scrollTo(0, y);
 }
-/* Views: #for, #want, #rated, #together (and #together/<list id>), #taste, and public profiles at /u/<name>. */
+/* Views: #for, #want, #rated, #together (and #together/<list id>), #taste, #welcome, and public profiles at /u/<name>. */
 let routedPath = location.pathname;
 function route() {
   routedPath = location.pathname;
   const pm = /^\/u\/([A-Za-z0-9_-]{1,40})\/?$/.exec(location.pathname);
-  const h = (location.hash || "#for").slice(1);
-  let next = "for";
+  const h = (location.hash || (typeof firstVisit === "function" && firstVisit() ? "#welcome" : "#for")).slice(1);
+  let next = "for", film = null;
   if (pm) { next = "profile"; ui.profileName = pm[1].toLowerCase(); }
   else if (/^together(\/[A-Za-z0-9_-]{16})?$/.test(h)) { next = "together"; ui.listId = h.split("/")[1] || null; }
-  else if (["for", "want", "rated", "taste"].includes(h)) next = h;
-  if (next !== ui.view && !ui.jumping) { ui.q = ""; ui.loose = false; }
-  ui.jumping = false;
+  else if (/^film=[a-z0-9][a-z0-9-]{0,79}$/.test(h)) { film = h.slice(5); history.replaceState(null, "", location.pathname + "#for"); }
+  else if (["for", "want", "rated", "taste", "welcome"].includes(h)) next = h;
+  if (next !== ui.view) { ui.q = ""; ui.loose = false; }
   ui.view = next;
   ui.focus = null;
   refresh({keepScroll: false});
   window.scrollTo(0, 0);
+  // A shared link to one film (/#film=<id>) opens its details over For you.
+  if (film) { if (BY.has(film) || ALIAS.has(film)) openFilm(film); else toast("That film isn’t in the Dread List any more."); }
 }
 /* Go to a view from anywhere, including from a profile page (a different path) without reloading. */
 function go(hash) {
@@ -904,12 +1082,15 @@ function undoLast() {
   toast("Undone");
 }
 let toastTimer = null;
+/* The toast is a popover, so it shows above an open sheet too (sheets sit in the browser's top layer). */
 function toast(text, canUndo) {
+  const t = $("toast");
   $("toastText").textContent = text;
   $("toastUndo").hidden = !canUndo;
-  $("toast").hidden = false;
+  t.hidden = false;
+  if (t.showPopover) { try { if (t.matches(":popover-open")) t.hidePopover(); t.showPopover(); } catch (e) { /* not supported */ } }
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { $("toast").hidden = true; }, 5000);
+  toastTimer = setTimeout(() => { t.hidden = true; if (t.hidePopover) { try { t.hidePopover(); } catch (e) { /* closed */ } } }, 5000);
 }
 function focusRow(id) {
   ui.focus = id;
@@ -917,33 +1098,17 @@ function focusRow(id) {
   const row = document.querySelector(`.view:not([hidden]) .film[data-id="${CSS.escape(id)}"]`);
   if (row) { row.classList.add("is-focus"); row.focus({preventScroll: true}); row.scrollIntoView({block: "nearest"}); }
 }
-/* Open a film from anywhere: films you've seen open in Rated, everything else in For you. */
-function jump(id, open) {
-  const f = BY.get(id);
-  if (!f) return;
-  if (open) ui.open.add(id);
-  if (isDone(eff(id))) {
-    ui.rf = "all"; ui.rq = "";
-    if (ui.view !== "rated") go("#rated"); else refresh();
-  } else {
-    ui.q = f.t; ui.tag = null; ui.dir = ""; ui.svc = new Set(); ui.len = "any"; ui.shown = PAGE; ui.loose = true; ui.jumping = true;
-    if (ui.view !== "for") go("#for"); else { ui.jumping = false; refresh(); }
-  }
-  setTimeout(() => focusRow(id), 30);
-}
-function setDir(name) {
-  ui.dir = name || ""; ui.shown = PAGE; ui.loose = false;
+/* Filter the list from anywhere (a director or tag in the details sheet, a suggestion): close the sheet, show For you
+   (or keep the Watchlist), and bring the list into view. */
+function filterTo(patch) {
+  hideDlg($("filmDlg"));
+  Object.assign(ui, {shown: PAGE, loose: false}, patch);
+  showSuggest(false);
   if (ui.view !== "for" && ui.view !== "want") go("#for"); else refresh();
+  const bar = $(ui.view === "want" ? "barWant" : "barFor");
+  if (bar && bar.getBoundingClientRect().top < 0) window.scrollTo(0, Math.max(0, bar.offsetTop - 70));
 }
-/* The director box takes an exact name from the list, or the best partial match when you press Enter or leave it. */
-function dirFrom(text, partial) {
-  const k = foldKey(text);
-  if (!k) return "";
-  const exact = DIRS.find(([d]) => foldKey(d) === k);
-  if (exact || !partial) return exact ? exact[0] : null;
-  const part = DIRS.find(([d]) => foldKey(d).startsWith(k)) || DIRS.find(([d]) => foldKey(d).split(" ").some(w => w.startsWith(k))) || DIRS.find(([d]) => foldKey(d).includes(k));
-  return part ? part[0] : null;
-}
+function setDir(name) { filterTo({dir: name || ""}); }
 function refocus(sel) {
   const el = document.querySelector(`.view:not([hidden]) ${sel}`);
   if (el) el.focus();
@@ -966,44 +1131,43 @@ function wire() {
     if (t && t.tagName === "IMG" && !t.dataset.dead) { t.dataset.dead = "1"; t.removeAttribute("src"); t.classList.add("blank"); }
   }, true);
   document.addEventListener("click", e => {
-    const b = e.target.closest("[data-act], [data-set], [data-theme-set]");
-    if (!b) return;
-    if (b.dataset.themeSet) { setCfg({theme: b.dataset.themeSet}); return; }
-    if (b.dataset.set) {
-      const k = b.dataset.set;
-      ui[k] = b.dataset.v;
-      ui.shown = PAGE;
-      refresh({keepBar: false});
-      refocus(`[data-set="${k}"][data-v="${CSS.escape(b.dataset.v)}"]`);
+    const b = e.target.closest("[data-act], [data-theme-set], [data-sheet], [data-set-open], [data-close]");
+    if (!b) {
+      // Tapping a row's text (not a button or link) opens its details too.
+      const row = e.target.closest(".view .film .main");
+      if (row && !e.target.closest("a, button, input, select")) openFilm(row.closest(".film").dataset.id);
       return;
     }
+    if (b.dataset.themeSet) { setCfg({theme: b.dataset.themeSet}); return; }
+    if (b.dataset.sheet) { openSheet(b.dataset.sheet); return; }
+    if (b.dataset.setOpen) { hideDlg($("sheet")); hideDlg($("filmDlg")); openSettings(b.dataset.setOpen); return; }
+    if (b.hasAttribute("data-close")) { hideDlg(b.closest("dialog")); return; }
     const a = b.dataset.act, row = b.closest("[data-id]"), id = row && row.dataset.id;
-    if (a === "open" && id) { ui.open.has(id) ? ui.open.delete(id) : ui.open.add(id); ui.focus = id; refresh({keepBar: true}); return; }
+    if (a === "open" && id) { ui.focus = id; openFilm(id); return; }
+    if (a === "openid") { openFilm(b.dataset.id2); return; }
     if (a === "tag") {
       const key = b.dataset.key;
       if (key.startsWith("d:")) { setDir(key.slice(2)); return; }
-      ui.tag = key; ui.q = ""; ui.loose = false; ui.shown = PAGE;
-      if (ui.view !== "for") go("#for"); else refresh();
-      window.scrollTo(0, $("barFor").offsetTop - 60);
+      filterTo({tag: key, q: ""});
       return;
     }
     if (a === "untag") { ui.tag = null; refresh(); return; }
-    if (a === "dir") { setDir(ui.dir === b.dataset.key ? "" : b.dataset.key); return; }
+    if (a === "dir") { const k = b.dataset.key; filterTo({dir: ui.dir === k && !b.closest("#suggest") ? "" : k, q: b.closest("#suggest") ? "" : ui.q}); return; }
     if (a === "undir") { setDir(""); return; }
+    if (a === "clearall") { Object.assign(ui, {q: "", dir: "", tag: null, svc: new Set(), gore: "any", len: "any", loose: false, shown: PAGE}); refresh(); return; }
     if (a === "svc") {
       const k = b.dataset.key;
       ui.svc.has(k) ? ui.svc.delete(k) : ui.svc.add(k);
       ui.shown = PAGE;
       refresh();
-      refocus(`[data-act="svc"][data-key="${CSS.escape(k)}"]`);
       return;
     }
-    if (a === "svcall") { ui.svc = new Set(); ui.shown = PAGE; refresh(); refocus(`[data-act="svcall"]`); return; }
-    if (a === "en") { setCfg({en: b.dataset.v === "1" ? 1 : 0}, true); refocus(`[data-act="en"][data-v="${b.dataset.v}"]`); return; }
+    if (a === "svcall") { ui.svc = new Set(); ui.shown = PAGE; refresh(); return; }
     if (a === "loose" || a === "unloose") { ui.loose = a === "loose"; ui.shown = PAGE; refresh({keepBar: true}); return; }
     if (a === "rf") { ui.rf = ui.rf === b.dataset.v && b.dataset.v !== "all" ? "all" : b.dataset.v; refresh(); refocus(`[data-act="rf"][data-v="${CSS.escape(b.dataset.v)}"]`); return; }
     if (a === "roll") { ui.roll++; renderTonight(); return; }
-    if (a === "jump" || a === "jumpopen") { jump(b.dataset.id2, true); return; }
+    if (a === "jump" || a === "jumpopen") { openFilm(b.dataset.id2); return; }
+    if (a === "find") { if (typeof openFind === "function") openFind(($("q") && $("q").value) || ui.q); return; }
     if (id) act(id, a, b.dataset.rate);
   });
   // Hovering a score previews its word under the meter.
@@ -1015,41 +1179,44 @@ function wire() {
   };
   document.addEventListener("mouseover", e => preview(e, true));
   document.addEventListener("mouseout", e => preview(e, false));
-  document.addEventListener("focusin", e => preview(e, true));
-  document.addEventListener("focusout", e => preview(e, false));
+  document.addEventListener("focusin", e => {
+    preview(e, true);
+    if (e.target.id === "q") showSuggest(true);
+  });
+  document.addEventListener("focusout", e => {
+    preview(e, false);
+    // Leave the suggestions up long enough for a tap on one to land (iOS doesn't focus buttons it taps).
+    if (e.target.id === "q" || (e.target.closest && e.target.closest("#suggest"))) {
+      setTimeout(() => { const s = $("suggest"); if (s && !s.contains(document.activeElement) && document.activeElement !== $("q")) showSuggest(false); }, 250);
+    }
+  });
   $("moreFor").addEventListener("click", () => { ui.shown += PAGE; refresh({keepBar: true}); });
   document.addEventListener("input", e => {
     const t = e.target;
     if (t.id === "q") {
       ui.q = t.value; ui.shown = PAGE; ui.loose = false;
+      showSuggest(true);
       clearTimeout(wire.t);
       wire.t = setTimeout(() => refresh({keepBar: true}), 120);
     } else if (t.id === "rq") {
       ui.rq = t.value;
       clearTimeout(wire.t);
       wire.t = setTimeout(() => refresh({keepBar: true}), 120);
-    } else if (t.id === "dirq") {
-      // Picking from the suggestions, or typing a full name, applies at once; clearing the box shows every director.
-      const d = dirFrom(t.value, false);
-      if (d !== null && d !== ui.dir) { ui.dir = d; ui.shown = PAGE; ui.loose = false; refresh({keepBar: true}); }
     }
   });
   document.addEventListener("change", e => {
     const t = e.target;
-    if (t.id === "sort") { ui.sort = t.value; ui.shown = PAGE; refresh({keepBar: true}); }
-    else if (t.id === "rsort") { ui.rsort = t.value; refresh({keepBar: true}); }
-    else if (t.id === "svcMore" && t.value) { ui.svc.add(t.value); ui.shown = PAGE; refresh(); refocus("#svcMore"); }
-    else if (t.id === "dirq") {
-      const d = dirFrom(t.value, true);
-      if (d === null) { toast(`No director called “${t.value}” in the pool`); t.value = ui.dir; return; }
-      t.value = d;
-      if (d !== ui.dir) { ui.dir = d; ui.shown = PAGE; ui.loose = false; refresh({keepBar: true}); }
-    }
+    if (t.id === "sort") { ui.sort = t.value; ui.shown = PAGE; refresh(); refocus("#sort"); }
+    else if (t.id === "fGore") { ui.gore = t.value; ui.shown = PAGE; refresh(); refocus("#fGore"); }
+    else if (t.id === "fLen") { ui.len = t.value; ui.shown = PAGE; refresh(); refocus("#fLen"); }
+    else if (t.id === "fLang") { setCfg({en: t.value === "1" ? 1 : 0}, true); refocus("#fLang"); }
+    else if (t.id === "rsort") { ui.rsort = t.value; refresh(); refocus("#rsort"); }
+    else if (t.id === "svcMore" && t.value) { ui.svc.add(t.value); ui.shown = PAGE; refresh(); }
   });
-  $("toastUndo").addEventListener("click", undoLast);
   document.addEventListener("keydown", e => {
+    if (e.target.id === "q" && e.key === "Enter") { e.preventDefault(); showSuggest(false); e.target.blur(); return; }
     if (e.target.closest("input, select, textarea, dialog")) {
-      if (e.key === "Escape" && /^(q|rq|dirq)$/.test(e.target.id)) e.target.blur();
+      if (e.key === "Escape" && /^(q|rq)$/.test(e.target.id)) { showSuggest(false); e.target.blur(); }
       return;
     }
     if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -1070,20 +1237,36 @@ function wire() {
     if (k === "Enter" && e.target.closest("button, a")) return;
     const id = ui.focus, nextId = rows[idx + 1] ? rows[idx + 1].dataset.id : rows[idx - 1] ? rows[idx - 1].dataset.id : null;
     const move = () => { if (nextId && !document.querySelector(`.view:not([hidden]) .film[data-id="${CSS.escape(id)}"]`)) focusRow(nextId); else focusRow(id); };
-    if (k === "o" || k === "Enter") { e.preventDefault(); ui.open.has(id) ? ui.open.delete(id) : ui.open.add(id); refresh({keepBar: true}); focusRow(id); }
+    if (k === "o" || k === "Enter") { e.preventDefault(); openFilm(id); }
     else if (k === "w") { act(id, "want"); move(); }
     else if (k === "x") { act(id, "pass"); move(); }
     else if (k === "s") { act(id, "seen"); }
     else if (/^[0-9]$/.test(k)) { act(id, "rate", k === "0" ? 10 : Number(k)); move(); }
     else if (k === "Escape") { ui.rating.delete(id); refresh({keepBar: true}); focusRow(id); }
   });
+  // Dialogs: the details sheet and the filter sheet close on the button, Escape, or a tap outside.
+  for (const d of document.querySelectorAll("dialog")) {
+    d.addEventListener("close", () => {
+      if (d.id === "filmDlg") { const id = ui.film; ui.film = null; if (id) setTimeout(() => focusRow(id), 0); }
+      if (d.id === "sheet") ui.sheet = null;
+      dlgClosed();
+    });
+    d.addEventListener("click", e => { if (e.target === d) hideDlg(d); });
+  }
+  $("closeFilm").addEventListener("click", () => hideDlg($("filmDlg")));
+  $("toastUndo").addEventListener("click", undoLast);
   const setTop = () => document.documentElement.style.setProperty("--top-h", document.querySelector(".top").offsetHeight + "px");
   window.addEventListener("resize", setTop);
   setTop();
+  if (isStandalone()) document.documentElement.classList.add("standalone");
   wireSettings();
 }
 
-/* ---------- Settings ---------- */
+/* ---------- Settings ----------
+   One dialog, in sections: a menu of sections on phones (tap one to open it, Back to return), the menu and the open
+   section side by side on wider screens. */
+const PANES = {account: "Account", services: "Streaming services", content: "Content", look: "Appearance", data: "Your data", about: "About"};
+let setPane = null;
 function setCfg(patch, rebar) {
   state.cfg = cfg = Object.assign({}, cfg, patch, {t: nowISO()});
   saveLocal();
@@ -1097,31 +1280,66 @@ function applyTheme() {
   else document.documentElement.dataset.theme = cfg.theme;
 }
 function fillSettings() {
-  $("svcChecks").innerHTML = OWNABLE.map(k => {
-    const s = SVC[k];
-    return `<label class="check"><input type="checkbox" data-svc="${k}"${cfg.svc[k] ? " checked" : ""}> <span>${esc(s.n)}${s.p && !cfg.svc[k] ? ` <small>£${s.p.toFixed(2)}</small>` : ""}${k === "hbo" ? ` <small>via NOW</small>` : ""}</span></label>`;
-  }).join("");
-  $("flagChecks").innerHTML = Object.entries(FLAGS).map(([k, l]) => `<label class="check"><input type="checkbox" data-flag="${k}"${cfg.hide[k] ? " checked" : ""}> ${esc(l)}</label>`).join("");
+  // Built once, then only ticked and unticked, so a switch keeps its focus and animation as you use it.
+  if (!$("svcChecks").children.length) {
+    $("svcChecks").innerHTML = OWNABLE.map(k => {
+      const s = SVC[k];
+      return `<label class="sw"><span>${esc(s.n)}${k === "hbo" ? ` <small>comes with NOW Entertainment</small>` : s.p ? ` <small>£${s.p.toFixed(2)} a month</small>` : ""}</span><input type="checkbox" class="tog" data-svc="${k}"></label>`;
+    }).join("");
+    $("flagChecks").innerHTML = Object.entries(FLAGS).map(([k, l]) => `<label class="sw"><span>${esc(l)}</span><input type="checkbox" class="tog" data-flag="${k}"></label>`).join("");
+  }
+  document.querySelectorAll("#svcChecks [data-svc]").forEach(i => { i.checked = !!cfg.svc[i.dataset.svc]; });
+  document.querySelectorAll("#flagChecks [data-flag]").forEach(i => { i.checked = !!cfg.hide[i.dataset.flag]; });
   $("cfgFree").checked = !!cfg.free;
+  $("cfgEn").checked = !!cfg.en;
   document.querySelectorAll("[data-theme-set]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.themeSet === cfg.theme)));
+  const nSvc = OWNABLE.filter(k => cfg.svc[k]).length, nHide = Object.values(cfg.hide).filter(Boolean).length;
+  const sum = {
+    account: acct.user ? "@" + acct.user.handle : acct.server === false ? "This browser only" : "Not signed in",
+    services: nSvc ? `${plural(nSvc, "service")}${cfg.free ? " + free TV" : ""}` : cfg.free ? "Free TV only" : "None picked",
+    content: [nHide ? `Hiding ${nHide} flag${nHide === 1 ? "" : "s"}` : "", cfg.en ? "English only" : ""].filter(Boolean).join(" · ") || "Nothing hidden",
+    look: {auto: "Match device", dark: "Dark", light: "Light"}[cfg.theme] || "Match device"
+  };
+  for (const [k, v] of Object.entries(sum)) { const el = document.querySelector(`.set-nav [data-pane="${k}"] small`); if (el) el.textContent = v; }
   renderAccountBox();
 }
-function openSettings(focusId) {
+function showPane(p) {
+  setPane = p && PANES[p] ? p : null;
+  const d = $("settings");
+  d.classList.toggle("in-pane", !!setPane);
+  document.querySelectorAll(".set-pane").forEach(s => { s.hidden = s.dataset.pane !== setPane; });
+  document.querySelectorAll(".set-nav [data-pane]").forEach(b => b.setAttribute("aria-current", b.dataset.pane === setPane ? "true" : "false"));
+  $("setBack").hidden = !setPane;
+  $("set-h").textContent = setPane && !wide() ? PANES[setPane] : "Settings";
+  const body = d.querySelector(".set-panes");
+  if (body) body.scrollTop = 0;
+}
+function openSettings(pane) {
   const d = $("settings");
   fillSettings();
-  if (typeof d.showModal === "function") { if (!d.open) d.showModal(); } else d.setAttribute("open", "");
-  const focus = () => { const el = focusId && $(focusId); if (el) el.focus(); };
-  setTimeout(focus, 30);
+  showPane(pane || (wide() ? "account" : null));
+  showDlg(d);
+  setTimeout(() => {
+    const el = setPane ? d.querySelector(`.set-pane[data-pane="${setPane}"] h3, .set-pane[data-pane="${setPane}"] input, .set-pane[data-pane="${setPane}"] button`) : d.querySelector(".set-nav button");
+    if (el && el.focus) el.focus({preventScroll: true});
+  }, 40);
 }
 function wireSettings() {
   const d = $("settings");
   $("openSettings").addEventListener("click", () => openSettings());
-  $("closeSettings").addEventListener("click", () => { if (typeof d.close === "function") d.close(); else d.removeAttribute("open"); });
+  $("closeSettings").addEventListener("click", () => hideDlg(d));
+  $("setBack").addEventListener("click", () => { showPane(null); const b = d.querySelector(".set-nav button"); if (b) b.focus(); });
+  d.querySelector(".set-nav").addEventListener("click", e => {
+    const b = e.target.closest("[data-pane]");
+    if (b) showPane(b.dataset.pane);
+  });
+  window.addEventListener("resize", () => { if (d.open && wide() && !setPane) showPane("account"); else if (d.open) $("set-h").textContent = setPane && !wide() ? PANES[setPane] : "Settings"; });
   d.addEventListener("change", e => {
     const t = e.target;
     if (t.dataset.svc) setCfg({svc: Object.assign({}, cfg.svc, {[t.dataset.svc]: t.checked ? 1 : 0})});
     else if (t.dataset.flag) setCfg({hide: Object.assign({}, cfg.hide, {[t.dataset.flag]: t.checked ? 1 : 0})});
     else if (t.id === "cfgFree") setCfg({free: t.checked ? 1 : 0});
+    else if (t.id === "cfgEn") setCfg({en: t.checked ? 1 : 0}, true);
     else if (t.id === "importFile" && t.files && t.files[0]) importFile(t.files[0]);
   });
   $("exportBtn").addEventListener("click", () => {
@@ -1181,6 +1399,7 @@ async function boot() {
   await acctP;
   cfg = state.cfg;
   applyTheme();
+  if (ALIAS.size && migrateAliases()) { adoptGone(); buildDirs(); }
   $("boot").remove();
   const when = DATA_CHECKED && !isNaN(DATA_CHECKED) ? DATA_CHECKED.toLocaleString("en-GB", {day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"}) : "unknown";
   $("source").textContent = `UK availability, prices and scores from JustWatch, refreshed every morning (last check ${when}). Subgenres from Wikidata. Gore marked ~ is estimated from the certificate and synopsis. BBC iPlayer needs a TV licence.`;

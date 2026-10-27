@@ -1,5 +1,6 @@
-/* Dread List Worker: serves the page (static assets) and the /api used for accounts, sync, shared lists and public
-   profiles. Data lives in D1 (EU jurisdiction). No third-party services, keys or secrets. */
+/* Dread List Worker: serves the page (static assets) and the /api used for accounts, sync, shared lists, public
+   profiles and adding films from TMDB. Data lives in D1 (EU jurisdiction). One optional secret, TMDB_KEY, switches on
+   film search; nothing else needs a key. */
 
 import {HttpError} from "./util.js";
 import {withHeaders, json, errorResponse, checkOrigin, allowedOrigins} from "./http.js";
@@ -8,6 +9,7 @@ import * as auth from "./auth.js";
 import {getState, postState} from "./sync.js";
 import * as lists from "./lists.js";
 import {patchMe, deleteMe, exportMe, publicProfile, hints} from "./account.js";
+import {findStatus, findSearch, findFilm, findAdded, addedFeed, tmdbImage} from "./find.js";
 
 /* [method, path pattern, handler(env, request, ctx, params, url)]. :name matches one path segment. */
 const ROUTES = [
@@ -49,7 +51,13 @@ const ROUTES = [
   ["PATCH", "/api/lists/:id/items/:film", (env, req, ctx, p) => lists.patchItem(env, req, ctx, p.id, p.film)],
   ["DELETE", "/api/lists/:id/items/:film", (env, req, ctx, p) => lists.deleteItem(env, req, ctx, p.id, p.film)],
   ["GET", "/api/u/:handle", (env, req, ctx, p) => publicProfile(env, req, p.handle)],
-  ["GET", "/api/hints", (env, req) => hints(env, req)]
+  ["GET", "/api/hints", (env, req) => hints(env, req)],
+  ["GET", "/api/find/status", env => findStatus(env)],
+  ["GET", "/api/find", (env, req, ctx, p, url) => findSearch(env, req, url)],
+  ["GET", "/api/find/:id", (env, req, ctx, p) => findFilm(env, req, p.id)],
+  ["POST", "/api/find/:id", (env, req, ctx, p) => findAdded(env, req, p.id)],
+  ["GET", "/api/added", (env, req) => addedFeed(env, req)],
+  ["GET", "/api/img/:size/:file", (env, req, ctx, p) => tmdbImage(env, req, ctx, p.size, p.file)]
 ].map(([method, path, fn]) => {
   const names = [];
   const re = new RegExp("^" + path.replace(/:([a-z]+)/g, (m, n) => { names.push(n); return "([^/]{1,200})"; }) + "$");

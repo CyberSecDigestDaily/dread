@@ -29,10 +29,19 @@ const flag = v => v === 1 || v === true ? 1 : undefined;
 const list = (v, max, test) => Array.isArray(v) ? v.filter(x => typeof x === "string" && test(x)).slice(0, max) : undefined;
 const TAG = s => /^[a-z][a-z-]{0,23}$/.test(s);
 
+/* Services a film added from TMDB is on: known keys, or a named channel or free service. No links: the page builds
+   those from known hosts. */
+const SVC_KEY = /^(nf|pv|dp|cr|hbo|nowe|nowc|sh|pp|mubi|atv|bfi|tubi|c4|bbc|itvx|pluto|plex|ytf|rakuten|mx|my5)$/;
+const NAMED_SVC = /^(ch|free):[^\u0000-\u001f<>"&]{1,60}$/;
+const offerList = v => Array.isArray(v) ? v.filter(o => Array.isArray(o) && typeof o[0] === "string" && (SVC_KEY.test(o[0]) || NAMED_SVC.test(o[0])))
+  .slice(0, 12).map(o => [o[0], "", null]) : undefined;
+
 /* The compact copy of a film that travels with a rating (SNAP_KEYS in app.js). Links are rebuilt from known hosts, so
-   only path-shaped values are accepted for them. */
+   only path-shaped values are accepted for them. Films added from TMDB also carry their TMDB id, poster path and
+   services. */
 export function cleanSnap(f) {
   if (!f || typeof f !== "object" || Array.isArray(f)) return null;
+  const tm = int(f.tm, 1, 1e9);
   const out = {
     t: str(f.t, 200), y: int(f.y, 1880, 2100), jid: typeof f.jid === "string" && /^[a-z]{1,4}\d{1,12}$/.test(f.jid) ? f.jid : undefined,
     px: flag(f.px), tg: list(f.tg, 20, TAG), ta: list(f.ta, 20, TAG),
@@ -41,7 +50,9 @@ export function cleanSnap(f) {
     rn: int(f.rn, 1, 1000), im: num(f.im, 0, 10), rt: int(f.rt, 0, 100),
     imdb: typeof f.imdb === "string" && /^tt\d{5,10}$/.test(f.imdb) ? f.imdb : undefined,
     jw: typeof f.jw === "string" && f.jw.length <= 200 && /^\/[a-z]{2}\/[a-z0-9-]+(\/[a-z0-9-]+)*$/.test(f.jw) ? f.jw : undefined,
-    d: str(f.d, 1200), lg: typeof f.lg === "string" && /^[a-z]{2,3}$/.test(f.lg) ? f.lg : undefined, ot: str(f.ot, 200)
+    d: str(f.d, 1200), lg: typeof f.lg === "string" && /^[a-z]{2,3}$/.test(f.lg) ? f.lg : undefined, ot: str(f.ot, 200),
+    tm, tp: tm && typeof f.tp === "string" && /^\/[A-Za-z0-9_-]{6,64}\.(jpg|png)$/.test(f.tp) ? f.tp : undefined,
+    o: tm ? offerList(f.o) : undefined
   };
   if (out.dir) out.dir = out.dir.map(s => str(s, 100));
   for (const k of Object.keys(out)) if (out[k] === undefined || (Array.isArray(out[k]) && !out[k].length)) delete out[k];

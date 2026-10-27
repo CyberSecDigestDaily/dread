@@ -5,6 +5,8 @@
    SEED, BY, FILMS, refresh, applyTheme, fillSettings, toast, esc, $, nowISO, timeNow, go. */
 
 const KEY_ACCT = "dread.acct.v1", KEY_SEEDED = "dread.seeded.v1", KEY_JOIN = "dread.join", KEY_NOTE = "dread.note";
+const JOIN_DAYS = 7; // an invite you opened but haven't acted on is remembered this long in this browser
+const KEY_APPNOTE = "dread.appnote"; // the Home Screen app's sign-in tip, once dismissed
 const LEGACY_CREDS = "dread.sync.v2";
 const acct = {user: null, session: null, rev: 0, dirty: new Set(), cfgDirty: false, timer: null, pushing: false, again: false,
   lastPull: 0, server: null, offline: false, status: {kind: null, text: ""}};
@@ -133,7 +135,6 @@ function counts3(st) {
   }
   return {rated, want, pass, seed, any: rated + want + pass};
 }
-const plural = (n, one, many) => `${n.toLocaleString("en-GB")} ${n === 1 ? one : many || one + "s"}`;
 
 /* ---------- Start-up ---------- */
 async function initAccount() {
@@ -162,7 +163,7 @@ async function afterBoot() {
     if (!acct.user && acct.server === true) { authView = {mode: "link", code: m[1]}; setTimeout(() => openAuth(), 50); }
   } else if ((m = /^#join=([A-Za-z0-9_-]{16})\.([A-Za-z0-9_-]{22})$/.exec(h))) {
     history.replaceState(null, "", location.pathname + "#together");
-    try { sessionStorage.setItem(KEY_JOIN, JSON.stringify({list: m[1], invite: m[2]})); } catch (e) { /* storage blocked */ }
+    savePendingJoin(m[1], m[2]);
   } else if ((m = /^#pair=([A-Za-z0-9_-]+)$/.exec(h))) {
     // A pairing link from the old encrypted sync: keep it so this browser's list can be brought across.
     history.replaceState(null, "", location.pathname + "#for");
@@ -411,9 +412,28 @@ function renderAccountUI() {
   if (!acct.user) setAcctStatus(null, acct.server === false ? "Saved in this browser" : "Saved in this browser only");
   else if (acct.offline) setAcctStatus("err", "Offline: changes will save when you’re back online.");
   renderNote();
-  if ($("settings") && $("settings").open) renderAccountBox();
+  if ($("settings") && $("settings").open) fillSettings();
 }
-function pendingJoin() { try { return JSON.parse(sessionStorage.getItem(KEY_JOIN)); } catch (e) { return null; } }
+/* An invite you opened is kept in this browser (not just this tab) for a week, so signing in later still joins. */
+function savePendingJoin(list, invite) {
+  store.set(KEY_JOIN, {list, invite, at: Date.now()});
+}
+function pendingJoin() {
+  let j = store.get(KEY_JOIN);
+  if (!j) { try { j = JSON.parse(sessionStorage.getItem(KEY_JOIN)); } catch (e) { j = null; } }
+  if (!j || typeof j.list !== "string" || typeof j.invite !== "string") return null;
+  if (j.at && Date.now() - j.at > JOIN_DAYS * 864e5) { clearPendingJoin(); return null; }
+  return j;
+}
+function clearPendingJoin() {
+  store.del(KEY_JOIN);
+  try { sessionStorage.removeItem(KEY_JOIN); } catch (e) { /* blocked */ }
+}
+/* Pull a list id and invite out of whatever was pasted: the whole link, or just the part after #join=. */
+function parseInvite(text) {
+  const m = /(?:#join=)?([A-Za-z0-9_-]{16})\.([A-Za-z0-9_-]{22})(?![A-Za-z0-9_-])/.exec(String(text || "").trim());
+  return m ? {list: m[1], invite: m[2]} : null;
+}
 function renderNote() {
   const n = $("syncNote");
   if (!n) return;
@@ -421,7 +441,12 @@ function renderNote() {
   try { dismissed = sessionStorage.getItem(KEY_NOTE) === "1"; } catch (e) { /* blocked */ }
   const join = pendingJoin();
   if (!acct.user && join && acct.server === true) {
-    n.innerHTML = `<span>You’ve been invited to a shared list. Sign in or create an account to join it.</span><button type="button" class="btn" data-note="auth">Sign in to join</button>`;
+    n.innerHTML = `<span>You’ve been invited to a shared list. ${isStandalone() ? "Sign in with your passkey" : "Sign in or create an account"} to join it.</span><button type="button" class="btn" data-note="auth">Sign in to join</button>`;
+    n.hidden = false; return;
+  }
+  if (!acct.user && isStandalone() && acct.server === true && !store.get(KEY_APPNOTE)) {
+    // A Home Screen app has its own storage and sign-in, separate from Safari's.
+    n.innerHTML = `<span>This Home Screen app keeps its own sign-in. Already have an account? Your passkey works here too.</span><button type="button" class="btn" data-note="signin">Sign in</button><button type="button" class="act quiet" data-note="hide-app">Not now</button>`;
     n.hidden = false; return;
   }
   if (acct.user) {
@@ -444,12 +469,12 @@ function openAuth(mode) {
   if (mode) authView = {mode};
   const d = $("authDlg");
   renderAuth();
-  if (typeof d.showModal === "function") { if (!d.open) d.showModal(); } else d.setAttribute("open", "");
-  setTimeout(() => { const f = d.querySelector("[autofocus], input:not([type=checkbox])"); if (f) f.focus(); }, 40);
+  showDlg(d);
+  // On phones, don't pop the keyboard over the choices; on desktop, put the cursor in the first box.
+  setTimeout(() => { const f = d.querySelector("[autofocus], input:not([type=checkbox])"); if (f && wide()) f.focus(); }, 40);
 }
 function closeAuth() {
-  const d = $("authDlg");
-  if (typeof d.close === "function") d.close(); else d.removeAttribute("open");
+  hideDlg($("authDlg"));
 }
 function authErr(text) {
   const e = $("aErr");
@@ -467,19 +492,22 @@ function renderAuth() {
   let html = "";
   if (v.mode === "start") {
     h2.textContent = "Your list, everywhere";
+    // A Home Screen app can't see Safari's sign-in, so most people opening it already have an account: sign-in first.
+    const app = isStandalone();
     html = `<p class="hint">An account keeps your ratings, watchlist and settings on every device, lets you make shared lists with friends, and gives you a public page if you want one.</p>
       ${pk ? "" : `<p class="err">This browser doesn’t support passkeys. Use a code below, or open the Dread List in a current browser.</p>`}
-      <div class="authcols">
+      ${app ? `<p class="hint note">This Home Screen app has its own sign-in, separate from Safari. If you made your account in Safari, sign in here with the same passkey.</p>` : ""}
+      <div class="authcols${app ? " signin-first" : ""}">
         <form id="fCreate" class="authcol" novalidate>
           <h3>New here?</h3>
           <label for="aHandle">Pick a name</label>
-          <input id="aHandle" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" minlength="3" maxlength="20" placeholder="e.g. don" required value="${esc(v.handle || "")}">
+          <input id="aHandle" name="handle" type="text" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" minlength="3" maxlength="20" placeholder="e.g. nightowl" required value="${esc(v.handle || "")}">
           <p class="hint">3–20 letters, numbers, - or _. Only shown if you share your list.</p>
           <div class="btns left"><button type="submit" class="btn"${pk ? "" : " disabled"}>Create account with a passkey</button></div>
         </form>
         <div class="authcol">
           <h3>Been here before?</h3>
-          <div class="btns left"><button type="button" class="btn ghost" data-auth="signin"${pk ? "" : " disabled"}>Sign in with a passkey</button></div>
+          <div class="btns left"><button type="button" class="btn${app ? "" : " ghost"}" data-auth="signin"${pk ? "" : " disabled"}>Sign in with a passkey</button></div>
           <p class="hint">Face ID, Touch ID, Windows Hello, a security key or your phone.</p>
           <p class="ways"><button type="button" class="linkish" data-auth="mode-link">Use a code from a signed-in device</button><br><button type="button" class="linkish" data-auth="mode-recover">Use a recovery code</button></p>
         </div>
@@ -532,27 +560,33 @@ async function afterSignIn(opts) {
   authView = {mode: "start"};
   await finishPendingJoin();
   toast(`Signed in as @${acct.user.handle}`);
+  if (o.created && typeof maybeOnboard === "function") maybeOnboard();
 }
 async function finishPendingJoin() {
   const j = pendingJoin();
   if (!j || !acct.user) return;
-  try { sessionStorage.removeItem(KEY_JOIN); } catch (e) { /* blocked */ }
+  clearPendingJoin();
+  await joinWith(j);
+}
+async function joinWith(j) {
   try {
-    const r = await api("POST", "/api/lists/join", j);
+    const r = await api("POST", "/api/lists/join", {list: j.list, invite: j.invite});
     if (typeof invalidateLists === "function") invalidateLists();
     toast(r.already ? `You’re already on ${r.name}` : `You joined ${r.name}`);
     go("#together/" + r.id);
-  } catch (e) { toast(e.message); }
+    return true;
+  } catch (e) { toast(e.message); return false; }
 }
 function wireAuth() {
   const d = $("authDlg");
   $("closeAuth").addEventListener("click", closeAuth);
-  $("acctBtn").addEventListener("click", () => { if (acct.user) openSettings(); else openAuth("start"); });
+  $("acctBtn").addEventListener("click", () => { if (acct.user) openSettings("account"); else openAuth("start"); });
   $("syncNote").addEventListener("click", e => {
     const b = e.target.closest("[data-note]");
     if (!b) return;
-    if (b.dataset.note === "auth") openAuth("start");
+    if (b.dataset.note === "auth" || b.dataset.note === "signin") openAuth("start");
     else if (b.dataset.note === "import") { const k = importGuest(); toast(`Added ${plural(k, "film")} to your account`); renderNote(); }
+    else if (b.dataset.note === "hide-app") { store.set(KEY_APPNOTE, 1); renderNote(); }
     else { try { sessionStorage.setItem(KEY_NOTE, "1"); } catch (err) { /* blocked */ } renderNote(); }
   });
   d.addEventListener("input", e => {
@@ -574,7 +608,7 @@ function wireAuth() {
         const credential = await passkeyCreate(o.options);
         const r = await api("POST", "/api/auth/register/verify", {flow: o.flow, credential, name: deviceName()});
         await enterAccount(r.user, {created: true});
-        await afterSignIn({codes: r.recoveryCodes});
+        await afterSignIn({codes: r.recoveryCodes, created: true});
       } catch (err) { authBusy(btn, false); authErr(passkeyError(err)); }
     } else if (f.id === "fRecover") {
       authBusy(btn, true, "Checking…");
@@ -655,21 +689,21 @@ function renderAccountBox() {
   if (!acct.user) {
     box.innerHTML = acct.server === false
       ? `<p class="hint">Your list is saved in this browser. Accounts work on <a href="https://dreadlist.co.uk/">dreadlist.co.uk</a>.</p>`
-      : `<p class="sync-status"><span class="dot" aria-hidden="true"></span><span class="st">Saved in this browser only.</span></p>
+      : `<div class="group"><p class="sync-status"><span class="dot" aria-hidden="true"></span><span class="st">Saved in this browser only.</span></p>
          <p class="hint">Make an account to keep your list on every device, share lists with friends and get a public page. Sign-in is a passkey: no email or password.</p>
-         <div class="btns left"><button type="button" class="btn" data-acct="auth">Create an account or sign in</button></div>`;
+         <div class="btns left"><button type="button" class="btn" data-acct="auth">${isStandalone() ? "Sign in or create an account" : "Create an account or sign in"}</button></div></div>`;
     if (data) data.innerHTML = "";
     return;
   }
   const u = acct.user, st = acct.status;
   const wasOpen = [...box.querySelectorAll("details[open][data-sec]")].map(x => x.dataset.sec);
-  box.innerHTML = `<p class="sync-status"><span class="dot${st.kind ? " " + st.kind : ""}" aria-hidden="true"></span><span>Signed in as <b>@${esc(u.handle)}</b>.</span> <span class="st">${esc(st.text || "")}</span></p>
-    <div class="btns left"><button type="button" class="btn ghost" data-acct="sync">Sync now</button><button type="button" class="btn ghost" data-acct="signout">Sign out</button></div>
+  box.innerHTML = `<div class="group"><p class="sync-status"><span class="dot${st.kind ? " " + st.kind : ""}" aria-hidden="true"></span><span>Signed in as <b>@${esc(u.handle)}</b></span> <span class="st">${esc(st.text || "")}</span></p>
+    <div class="btns left"><button type="button" class="btn ghost" data-acct="sync">Sync now</button><button type="button" class="btn ghost" data-acct="signout">Sign out</button></div></div>
     <details class="acct-sec" data-sec="profile"><summary>Name and sharing</summary>
-      <form id="fHandle" class="row" novalidate><label for="acHandle">Name</label><input id="acHandle" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" value="${esc(u.handle)}" maxlength="20"><button type="submit" class="btn ghost">Rename</button></form>
-      <label class="check"><input type="checkbox" id="acPublic"${u.public ? " checked" : ""}> <span>Public page at <a href="/u/${esc(u.handle)}" data-acct="open-profile">dreadlist.co.uk/u/${esc(u.handle)}</a>: your ratings and watchlist, never passes or dates. Anyone with the link can see it.</span></label>
-      ${u.public ? `<div class="btns left"><button type="button" class="btn ghost" data-acct="copy-profile">Copy link</button></div>` : ""}
-      <label class="check"><input type="checkbox" id="acShare"${cfg.share === 1 ? " checked" : ""}> <span>Help grow the pool: the nightly rebuild gets the ids of films you loved, liked, wanted or passed (no name, scores or dates) and pulls in more like them for everyone.</span></label>
+      <form id="fHandle" class="row" novalidate><label for="acHandle">Name</label><input id="acHandle" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" value="${esc(u.handle)}" maxlength="20"><button type="submit" class="btn ghost">Rename</button></form>
+      <label class="sw"><span>Public page<small>Your ratings and watchlist at <a href="/u/${esc(u.handle)}" data-acct="open-profile">dreadlist.co.uk/u/${esc(u.handle)}</a>, never passes or dates. Anyone with the link can see it.</small></span><input type="checkbox" class="tog" id="acPublic"${u.public ? " checked" : ""}></label>
+      ${u.public ? `<div class="btns left"><button type="button" class="btn ghost" data-acct="share-profile">Share my list</button><button type="button" class="btn ghost" data-acct="copy-profile">Copy link</button></div>` : ""}
+      <label class="sw"><span>Help grow the pool<small>The nightly rebuild gets the ids of films you loved, liked, wanted or passed (no name, scores or dates) and pulls in more like them for everyone.</small></span><input type="checkbox" class="tog" id="acShare"${cfg.share === 1 ? " checked" : ""}></label>
     </details>
     <details class="acct-sec" data-sec="keys"><summary>Passkeys and devices</summary>
       <ul class="klist" id="pkList"><li class="hint">Loading…</li></ul>
@@ -785,11 +819,15 @@ function wireAccountBox() {
     const a = b.dataset.acct;
     acErr("");
     try {
-      if (a === "auth") { d.close(); openAuth("start"); }
-      else if (a === "sync") { b.textContent = "Syncing…"; await pullNow(true); b.textContent = "Sync now"; }
-      else if (a === "signout") { d.close(); await signOut(); }
-      else if (a === "open-profile") { e.preventDefault(); d.close(); go2profile(acct.user.handle); }
+      if (a === "auth") { hideDlg(d); openAuth("start"); }
+      else if (a === "sync") { b.textContent = "Syncing…"; await pullNow(true); if (typeof invalidateLists === "function") invalidateLists(); b.textContent = "Sync now"; }
+      else if (a === "signout") { hideDlg(d); await signOut(); }
+      else if (a === "open-profile") { e.preventDefault(); hideDlg(d); go2profile(acct.user.handle); }
       else if (a === "copy-profile") { await navigator.clipboard.writeText(`${location.origin}/u/${acct.user.handle}`); b.textContent = "Copied"; }
+      else if (a === "share-profile") {
+        const url = `${location.origin}/u/${acct.user.handle}`;
+        if (!(await shareLink({title: `@${acct.user.handle}’s Dread List`, text: "My horror ratings and watchlist on the Dread List", url}))) b.textContent = "Link copied";
+      }
       else if (a === "add-passkey") { await addPasskey(); loadKeys(); }
       else if (a === "link") await showLinkCode();
       else if (a === "rename-key") {
@@ -819,7 +857,7 @@ function wireAccountBox() {
         if (typed === null) return;
         if (typed.trim().toLowerCase().replace(/^@/, "") !== acct.user.handle) { acErr("The name didn’t match, so nothing was deleted."); return; }
         await withFresh(() => api("DELETE", "/api/me"));
-        d.close();
+        hideDlg(d);
         leaveAccount("Your account and everything in it has been deleted.");
       }
     } catch (err) { acErr(passkeyError(err)); }

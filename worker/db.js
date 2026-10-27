@@ -3,7 +3,7 @@
 
 import {randomToken, hmacHex, now, HttpError} from "./util.js";
 
-const SCHEMA_VERSION = "1";
+const SCHEMA_VERSION = "2";
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`,
@@ -101,7 +101,20 @@ const SCHEMA = [
      f TEXT,
      PRIMARY KEY (list_id, film_id)
    ) WITHOUT ROWID`,
-  `CREATE TABLE IF NOT EXISTS rl (k TEXT PRIMARY KEY, n INTEGER NOT NULL, reset INTEGER NOT NULL) WITHOUT ROWID`
+  `CREATE TABLE IF NOT EXISTS rl (k TEXT PRIMARY KEY, n INTEGER NOT NULL, reset INTEGER NOT NULL) WITHOUT ROWID`,
+  // v2: films people added from TMDB, counted (never attributed), for the nightly rebuild to bring into the pool.
+  `CREATE TABLE IF NOT EXISTS added (
+     tm INTEGER PRIMARY KEY,
+     imdb TEXT,
+     t TEXT NOT NULL,
+     y INTEGER,
+     h INTEGER NOT NULL DEFAULT 0,
+     f TEXT,
+     n INTEGER NOT NULL DEFAULT 1,
+     first_at INTEGER NOT NULL,
+     last_at INTEGER NOT NULL
+   )`,
+  `CREATE INDEX IF NOT EXISTS added_last ON added(last_at)`
 ];
 
 let ready = null, pepperValue = null;

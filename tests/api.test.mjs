@@ -292,6 +292,39 @@ const uniq = Math.random().toString(36).slice(2, 7);
     ok(made > 30 && n === 30, "at most 30 signed-in browsers per account", {made, n});
   }
 
+  section("Film search (TMDB, against tests/tmdb-mock.mjs)");
+  const fs = await anon.get("/api/find/status");
+  if (!fs.data.on) console.log("  - skipped: start wrangler dev with the TMDB_* vars from tests/tmdb-mock.mjs to run these");
+  else {
+    let r2 = await anon.get("/api/find?q=star");
+    ok(r2.status === 200 && r2.data.results.length === 1 && r2.data.results[0].tm === 501 && r2.data.results[0].h === 1 && r2.data.results[0].y === 2018, "search finds a film and says it's horror", r2.data);
+    ok((await anon.get("/api/find?q=s")).status === 400, "one-letter searches are refused");
+    r2 = await anon.get("/api/find/501");
+    const film = r2.data.film;
+    ok(r2.status === 200 && film.id === "tmdb-501" && film.dir[0] === "A.T. White" && film.imdb === "tt5700182" && film.ce === "15" && film.rn === 99, "details come back in the pool's shape", film);
+    ok(JSON.stringify(film.o) === JSON.stringify([["ch:Arrow Video", "", null], ["sh", "", null], ["tubi", "", null]]), "UK services map to our keys, with no links", film.o);
+    ok(film.ta.includes("grief") && film.ta.includes("creature"), "tags come from the synopsis and keywords", film.ta);
+    r2 = await anon.get("/api/find/777");
+    ok(r2.data.film.lg === "es" && r2.data.film.g === "H" && r2.data.film.ot === "Cinta de Medianoche", "language, original title and a gore estimate", r2.data.film);
+    ok((await anon.get("/api/find/abc")).status === 404 && (await anon.get("/api/find/999999")).status === 404, "unknown films are 404s");
+    ok((await anon.post("/api/find/501", {}, {headers: {Origin: null}})).status === 403, "counting an add needs our Origin");
+    ok((await anon.post("/api/find/501", {})).status === 200 && (await donPhone.post("/api/find/501", {})).status === 200 && (await anon.post("/api/find/888", {})).status === 200, "adds are counted, signed in or not");
+    r2 = await anon.get("/api/added");
+    const a501 = r2.data.films.find(f => f.tm === 501), a888 = r2.data.films.find(f => f.tm === 888);
+    ok(a501 && a501.n === 2 && a501.h === 1 && a501.f.o.length === 3 && a888 && a888.h === 0, "the rebuild's feed lists added films with counts", r2.data);
+    ok(!JSON.stringify(r2.data).includes(H.don) && !JSON.stringify(r2.data).includes(H.pho), "and never who added them");
+    const img = await fetch(BASE + "/api/img/w154/abcdefStarfish.jpg");
+    ok(img.status === 200 && img.headers.get("content-type") === "image/jpeg" && img.headers.get("cross-origin-resource-policy") === "same-origin" && /max-age=2592000/.test(img.headers.get("cache-control") || ""), "posters come through our own origin, cached", Object.fromEntries(img.headers));
+    ok((await fetch(BASE + "/api/img/w9999/abcdefStarfish.jpg")).status === 404 && (await fetch(BASE + "/api/img/w154/..%2F..%2Fsecret.jpg")).status === 404 && (await fetch(BASE + "/api/img/w154/abcdef.gif")).status === 404, "only TMDB poster paths of a fixed shape");
+    // A film added from TMDB syncs with its TMDB id, poster and services; anything else in it is dropped.
+    const T = new Date().toISOString();
+    r2 = await pho.post("/api/state", {since: 0, films: {"tmdb-501": {t: T, w: 1, f: Object.assign({}, film, {o: [["sh", "https://evil.example/", "2030-01-01"], ["<script>", "", null], ["ch:Arrow Video", "", null]], tp: "/../x.jpg", h: 1, x: "junk"})}}});
+    const synced = r2.data.films["tmdb-501"];
+    ok(synced && synced.w === 1 && synced.f.tm === 501 && JSON.stringify(synced.f.o) === JSON.stringify([["sh", "", null], ["ch:Arrow Video", "", null]]) && !synced.f.tp && !("h" in synced.f) && !("x" in synced.f), "a TMDB snapshot syncs, cleaned", synced);
+    r2 = await pho.post("/api/state", {since: 0, films: {"tm4040": {t: T, w: 1, f: {t: "Pool film", y: 2020, o: [["nf", "", null]], tp: "/abcdefgh.jpg"}}}});
+    ok(r2.data.films.tm4040 && !r2.data.films.tm4040.f.o && !r2.data.films.tm4040.f.tp, "pool films' copies don't carry services or TMDB posters", r2.data.films.tm4040);
+  }
+
   section("Page");
   const page = await fetch(BASE + "/u/" + H.pho);
   ok(page.status === 200 && /Content-Security-Policy/i.test([...page.headers.keys()].join(" ")) && (await page.text()).includes("<title>"), "profile URLs serve the app with a CSP");

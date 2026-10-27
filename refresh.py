@@ -3,7 +3,8 @@
 
 The pool is the curated picks and profile ratings in films.json, plus JustWatch UK's popular,
 trending and newly added horror films (overall, on Don's services, on free services and on
-Shudder), plus JustWatch's "similar titles" around every curated and rated film.
+Shudder), plus JustWatch's "similar titles" around every curated and rated film, plus the films
+people added to their lists from TMDB on the site (dreadlist.co.uk/api/added).
 
 Every film gets UK streaming offers with deep links and leaving dates, the cheapest rental and
 purchase, IMDb and Rotten Tomatoes scores, subgenre tags (curated, Wikidata and synopsis
@@ -37,6 +38,8 @@ KEEP_DAYS = 120  # a discovered film stays this long after it was last discovere
 # Opt-in taste hints (film ids only: no names, scores or dates), pooled from accounts that switched on "Help grow
 # the pool", plus the older single-user summary in dread-sync. Both are public, so no secret is needed.
 HINTS_URL = "https://dreadlist.co.uk/api/hints"
+# Films people added from TMDB search (film data only: how many times, never who). Public, no key.
+ADDED_URL = "https://dreadlist.co.uk/api/added"
 TASTE_URL = "https://raw.githubusercontent.com/CyberSecDigestDaily/dread-sync/main/state.json"
 
 CONTENT = """content(country: GB, language: "en") { title originalTitle originalReleaseYear fullPath shortDescription runtime
@@ -218,13 +221,22 @@ def search(films):
 
 
 def pick(film, nodes):
+    """The JustWatch node for a {t, y, q?, aka?, imdb?} record: the same IMDb id when we know it; else the same title
+    within a year (or, failing that, within three: festival premieres and UK releases can be years apart, as with
+    Black Mountain Side, 2014 and 2016); else, for hand-picked films only, the nearest-year result."""
     nodes = [n for n in nodes if n.get("content") and n.get("objectType", "MOVIE") == "MOVIE"]
-    near = [n for n in nodes if abs((n["content"].get("originalReleaseYear") or 0) - film["y"]) <= 1]
+    imdb = film.get("imdb")
+    if imdb:
+        for n in nodes:
+            if (n["content"].get("externalIds") or {}).get("imdbId") == imdb:
+                return n
     want = {norm(film["t"]), norm(film.get("q")), norm(film.get("aka"))} - {""}
-    for n in near:
-        if norm(n["content"]["title"]) in want:
-            return n
-    return near[0] if near else None
+    gap = lambda n: abs((n["content"].get("originalReleaseYear") or 0) - (film.get("y") or 0))
+    titled = sorted((n for n in nodes if norm(n["content"]["title"]) in want and gap(n) <= 3), key=gap)
+    if titled:
+        return titled[0]
+    near = [n for n in nodes if gap(n) <= 1]
+    return near[0] if near and not imdb else None
 
 
 def similar(ids, full):
@@ -567,6 +579,38 @@ def load_taste():
     return {k: v[:2000] for k, v in merged.items()}
 
 
+def load_added():
+    """Films people added from TMDB: [{id: "tmdb-<n>", tm, t, y, imdb, h (TMDB calls it horror), f (TMDB details)}]."""
+    try:
+        req = urllib.request.Request(ADDED_URL, headers={"user-agent": UA, "cache-control": "no-cache", "accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.load(resp) or {}
+    except Exception:  # not deployed yet, or offline
+        return []
+    out = []
+    for a in data.get("films") or []:
+        if not isinstance(a, dict) or not isinstance(a.get("tm"), int) or not a.get("t"):
+            continue
+        imdb = a.get("imdb") if re.fullmatch(r"tt\d{5,10}", str(a.get("imdb") or "")) else None
+        out.append({"id": f"tmdb-{a['tm']}", "key": f"tmdb-{a['tm']}", "tm": a["tm"], "t": str(a["t"])[:200],
+                    "y": a["y"] if isinstance(a.get("y"), int) else 0, "imdb": imdb, "h": 1 if a.get("h") else 0,
+                    "f": a.get("f") if isinstance(a.get("f"), dict) else None})
+    log(f"Added from TMDB: {len(out)} films ({sum(a['h'] for a in out)} horror)")
+    return out[:1000]
+
+
+def added_record(a):
+    """A pool record for an added film JustWatch doesn't have, built from TMDB's details."""
+    f = a.get("f") or {}
+    r = {"id": a["id"], "tm": a["tm"], "t": f.get("t") or a["t"], "y": f.get("y") or a.get("y") or None, "tg": [],
+         "g": f.get("g") if f.get("g") in ("L", "M", "H", "X", "U") else "M", "ge": 1,
+         "o": [o for o in (f.get("o") or []) if isinstance(o, list) and o and isinstance(o[0], str)][:12], "ls": TODAY.isoformat()}
+    for k in ("d", "rn", "ce", "co", "dir", "imdb", "lg", "ot", "ta", "fl", "tp"):
+        if f.get(k):
+            r[k] = f[k]
+    return r
+
+
 # ---------- Main ----------
 
 def main():
@@ -635,6 +679,28 @@ def main():
         sets.setdefault(jid, set()).add("taste")
     log(f"Taste summary: {len(keep_ids)} films ({len(like_ids)} liked or wanted); {len(recent)} recent films carried over")
 
+    # Films people added from TMDB: by the JustWatch id found on an earlier run, else by search. Horror ones (by
+    # TMDB or JustWatch) join the pool under their JustWatch id; the TMDB id becomes an alias, so ratings move across.
+    added = load_added()
+    add_jid = {}
+    for f in prev.values():
+        for a in f.get("al") or []:
+            if a.startswith("tmdb-") and f.get("jid"):
+                add_jid[a] = f["jid"]
+    got_add = by_ids({add_jid[a["id"]] for a in added if a["id"] in add_jid})
+    add_nodes = {a["id"]: got_add[add_jid[a["id"]]] for a in added if add_jid.get(a["id"]) in got_add}
+    add_nodes.update(search([a for a in added if a["id"] not in add_nodes]))
+    alias_of = {}
+    for a in added:
+        n = add_nodes.get(a["id"])
+        if not n:
+            continue
+        alias_of.setdefault(n["id"], set()).add(a["id"])
+        if a["h"] or any(g.get("shortName") == "hrr" for g in n["content"].get("genres") or []):
+            pool.setdefault(n["id"], n)
+            sets.setdefault(n["id"], set()).add("added")
+    log(f"Added films on JustWatch: {len(add_nodes)} of {len(added)}")
+
     # Neighbours of every hand-picked, profile-rated and liked film pull in more of the same.
     seeds = sorted(anchor_jids | set(like_ids[:250]))
     near, extra = similar(seeds, full=True)
@@ -645,7 +711,7 @@ def main():
 
     # 3. Quality bar for discovered films; anchors, your films and recently kept films always stay.
     kept = {jid: n for jid, n in pool.items() if jid not in anchor_jids and
-            (sets.get(jid, set()) & {"taste", "kept"} or keep_discovered(n["content"], sets.get(jid, set())))}
+            (sets.get(jid, set()) & {"taste", "kept", "added"} or keep_discovered(n["content"], sets.get(jid, set())))}
     log(f"Pool: {len(pool)} discovered, {len(kept)} kept after the quality bar")
 
     # 4. Similar-title edges for the kept pool (ids only).
@@ -659,7 +725,7 @@ def main():
     # JustWatch's horror filter lets some thrillers and dramas through: keep a discovered film only if JustWatch
     # or Wikidata actually calls it horror.
     def is_horror(n):
-        if any(g.get("shortName") == "hrr" for g in n["content"].get("genres") or []) or "taste" in sets.get(n["id"], set()):
+        if any(g.get("shortName") == "hrr" for g in n["content"].get("genres") or []) or sets.get(n["id"], set()) & {"taste", "added"}:
             return True
         return "horror" in wd.get((n["content"].get("externalIds") or {}).get("imdbId") or "", "")
     dropped = [n["content"]["title"] for n in kept.values() if not is_horror(n)]
@@ -698,6 +764,25 @@ def main():
         r["ls"] = TODAY.isoformat() if fresh else (prev.get(jid) or {}).get("ls") or TODAY.isoformat()
         films.append(r)
         id_of[jid] = r["id"]
+    # Added horror films JustWatch doesn't know yet stay in the pool on TMDB's details alone.
+    live = {f["id"] for f in films}
+    for a in added:
+        if a["id"] not in add_nodes and a["h"] and a.get("f") and a["id"] not in live:
+            films.append(added_record(a))
+            live.add(a["id"])
+    # Aliases: other ids a film has had (a TMDB id before the rebuild found it, or a discovered id a hand-picked film
+    # took over), so the page moves anyone's ratings across. Never a live film's id.
+    old_ids = {}
+    for f in prev.values():
+        if f.get("jid"):
+            old_ids.setdefault(f["jid"], set()).add(f["id"])
+    for f in films:
+        al = set((prev.get(f["id"]) or {}).get("al") or []) | alias_of.get(f.get("jid"), set()) | old_ids.get(f.get("jid"), set())
+        al = sorted(a for a in al - live if re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", a))
+        if al:
+            f["al"] = al[:10]
+        else:
+            f.pop("al", None)
     for f in films:
         jid = f.get("jid")
         f["sim"] = [id_of[j] for j in near.get(jid, []) if j in id_of and id_of[j] != f["id"]][:10]
