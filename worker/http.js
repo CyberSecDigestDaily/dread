@@ -6,6 +6,7 @@ export const COOKIE = "__Host-dread";
 const SESSION_TTL = 30 * 86400;      // sliding: renewed while you keep using it
 const SESSION_MAX = 180 * 86400;     // absolute: sign in again at least twice a year
 export const FRESH = 15 * 60;        // sensitive changes need a passkey (or code) sign-in this recent
+const MAX_SESSIONS = 30;
 
 export const SECURITY_HEADERS = {
   "Strict-Transport-Security": "max-age=63072000; includeSubDomains",
@@ -14,6 +15,9 @@ export const SECURITY_HEADERS = {
   "Cross-Origin-Opener-Policy": "same-origin",
   "Cross-Origin-Resource-Policy": "same-origin",
   "X-Frame-Options": "DENY",
+  "Cross-Origin-Embedder-Policy": "require-corp",
+  "Origin-Agent-Cluster": "?1",
+  "X-Permitted-Cross-Domain-Policies": "none",
   "Permissions-Policy": "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=(), browsing-topics=()"
 };
 export const PAGE_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data: blob:; " +
@@ -86,10 +90,15 @@ export const clearCookie = () => `${COOKIE}=; ${cookieAttrs(0)}`;
 /* New session: a 256-bit random token in the cookie, only its SHA-256 in the database. */
 export async function createSession(env, request, userId, method) {
   const token = randomToken(32), t = now();
-  await env.DB.prepare(`INSERT INTO sessions (id, user_id, created_at, last_seen_at, expires_at, authed_at, method, device)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(await sha256hex(token), userId, t, t, t + SESSION_TTL, t, method, deviceLabel(request.headers.get("User-Agent")))
-    .run();
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO sessions (id, user_id, created_at, last_seen_at, expires_at, authed_at, method, device)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(await sha256hex(token), userId, t, t, t + SESSION_TTL, t, method, deviceLabel(request.headers.get("User-Agent"))),
+    // At most MAX_SESSIONS signed-in browsers per account: the least recently used ones are signed out.
+    env.DB.prepare(`DELETE FROM sessions WHERE user_id = ?1 AND (expires_at <= ?2 OR id NOT IN
+                      (SELECT id FROM sessions WHERE user_id = ?1 ORDER BY last_seen_at DESC, created_at DESC LIMIT ?3))`)
+      .bind(userId, t, MAX_SESSIONS)
+  ]);
   return `${COOKIE}=${token}; ${cookieAttrs(SESSION_TTL)}`;
 }
 

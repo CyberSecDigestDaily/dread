@@ -74,15 +74,34 @@ async function api(request, env, ctx, url) {
   throw new HttpError(404, "not_found", "No such endpoint.");
 }
 
+/* Plain-text files at well-known paths. security.txt (RFC 9116) says where to report a vulnerability. */
+const SECURITY_TXT = `Contact: https://github.com/CyberSecDigestDaily/dread/security/advisories/new
+Expires: 2027-10-27T00:00:00.000Z
+Preferred-Languages: en
+Canonical: https://dreadlist.co.uk/.well-known/security.txt
+Policy: https://github.com/CyberSecDigestDaily/dread/security/policy
+`;
+const ROBOTS_TXT = `User-agent: *
+Disallow: /api/
+Disallow: /u/
+`;
+const text = (body, maxAge) => new Response(body, {headers: {"Content-Type": "text/plain; charset=utf-8", "Cache-Control": `public, max-age=${maxAge}`}});
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    const canonical = new URL(allowedOrigins(env)[0] || url.origin);
+    // HTTPS only on the real domain (HSTS takes over after the first visit).
+    if (url.protocol === "http:" && url.hostname.endsWith(canonical.hostname) && canonical.protocol === "https:") {
+      return withHeaders(Response.redirect(canonical.origin + url.pathname + url.search, 301), "api");
+    }
     // One canonical address: www (and any other alias of the domain) redirects to it, so passkeys, the session cookie
     // and browser storage all live on a single origin.
-    const canonical = new URL(allowedOrigins(env)[0] || url.origin);
     if (url.hostname !== canonical.hostname && url.hostname.endsWith("." + canonical.hostname)) {
       return withHeaders(Response.redirect(canonical.origin + url.pathname + url.search, 301), "api");
     }
+    if (url.pathname === "/.well-known/security.txt") return withHeaders(text(SECURITY_TXT, 86400), "api");
+    if (url.pathname === "/robots.txt") return withHeaders(text(ROBOTS_TXT, 86400), "api");
     if (url.pathname.startsWith("/api/")) {
       let res;
       try { res = await api(request, env, ctx, url); } catch (e) { res = errorResponse(e); }

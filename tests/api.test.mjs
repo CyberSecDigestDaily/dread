@@ -272,6 +272,26 @@ const uniq = Math.random().toString(36).slice(2, 7);
     ok(out[0].results[0].orphans === 0 && out[0].results[0].s2 === 0, "no orphaned rows left behind", out[0].results);
   }
 
+  section("Well-known files and headers");
+  const sec = await fetch(BASE + "/.well-known/security.txt");
+  ok(sec.status === 200 && /^Contact: /m.test(await sec.text()), "security.txt is served");
+  const rob = await fetch(BASE + "/robots.txt");
+  ok(rob.status === 200 && /Disallow: \/api\//.test(await rob.text()), "robots.txt keeps crawlers off the API and profiles");
+  const h2 = (await anon.get("/api/health")).headers;
+  ok(h2.get("cross-origin-embedder-policy") === "require-corp" && h2.get("strict-transport-security") && h2.get("x-permitted-cross-domain-policies") === "none", "isolation headers present");
+
+  section("Session cap");
+  if (process.env.WR) {
+    const capKey = new SoftAuthenticator(-7), capDev = new Device("cap");
+    await signUp(capDev, capKey, "cap" + uniq);
+    // Sign-ins share the test's one IP with the rate limiter, so start from a clean slate for it.
+    sql(`DELETE FROM rl`);
+    let made = 1;
+    for (let i = 0; i < 32; i++) if ((await signIn(new Device("cap" + i), capKey)).status === 200) made++;
+    const n = JSON.parse(sql(`SELECT COUNT(*) AS n FROM sessions s JOIN users u ON u.id = s.user_id WHERE u.handle = 'cap${uniq}'`))[0].results[0].n;
+    ok(made > 30 && n === 30, "at most 30 signed-in browsers per account", {made, n});
+  }
+
   section("Page");
   const page = await fetch(BASE + "/u/" + H.pho);
   ok(page.status === 200 && /Content-Security-Policy/i.test([...page.headers.keys()].join(" ")) && (await page.text()).includes("<title>"), "profile URLs serve the app with a CSP");
