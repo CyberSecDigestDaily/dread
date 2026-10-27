@@ -167,10 +167,40 @@ async function afterBoot() {
     // A pairing link from the old encrypted sync: keep it so this browser's list can be brought across.
     history.replaceState(null, "", location.pathname + "#for");
     try { const c = JSON.parse(new TextDecoder().decode(b64u.dec(m[1]))); if (c.t && c.k) store.set(LEGACY_CREDS, {token: c.t, key: c.k}); } catch (e) { /* bad link */ }
+  } else if ((m = /^#move=([A-Za-z0-9_-]{1,2000000})$/.exec(h))) {
+    history.replaceState(null, "", location.pathname + "#for");
+    await acceptMove(m[1]);
   }
   if (!acct.user) await legacyGuest();
   if (acct.user) await finishPendingJoin();
   renderAccountUI();
+}
+
+/* The old GitHub Pages address hands over that browser's list (and its old sync key) when it redirects here, as a
+   compressed blob in the URL fragment, which never reaches any server. It lands in this browser's guest list, from
+   where signing up brings it into an account. Anything not coming from that page needs a yes first. */
+async function acceptMove(blob) {
+  try {
+    if (typeof DecompressionStream !== "function") throw new Error("This browser can’t unpack the list. Download it on the old page and import it in Settings.");
+    const stream = new Blob([b64u.dec(blob)]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+    const text = await new Response(stream).text();
+    if (text.length > 20e6) throw new Error("too big");
+    const data = JSON.parse(text);
+    if (!data || data.v !== 1) throw new Error("not a list");
+    const incoming = normState(data.state);
+    const n = Object.keys(incoming.films).length;
+    const fromOldPage = /^https:\/\/cybersecdigestdaily\.github\.io\//.test(document.referrer);
+    if (!fromOldPage && !confirm(`Bring ${plural(n, "film")} from the old Dread List page into this browser?`)) return;
+    const guest = acct.user ? guestState() : state;
+    const merged = merge(guest, incoming);
+    store.set(KEY_STATE, merged);
+    if (!acct.user) { state = merged; cfg = state.cfg; }
+    const c = data.creds;
+    if (c && typeof c.token === "string" && typeof c.key === "string") store.set(LEGACY_CREDS, {token: c.token, key: c.key});
+    toast(`Brought ${plural(n, "film")} across from the old page`);
+  } catch (e) {
+    toast(e.message && e.message.length > 20 ? e.message : "That list didn’t come across. Use the Download button on the old page, then Import in Settings.");
+  }
 }
 
 /* Browsers that used the original single-user page with its encrypted sync: give them that page's profile ratings and
