@@ -86,6 +86,8 @@ export async function registerOptions(env, request) {
 
 export async function registerVerify(env, request) {
   await limitIP(env, request, "regv", 20, 3600);
+  // A ceiling on new accounts per day across everyone, so a botnet can't fill the database.
+  await rateLimit(env, "reg:all", 2000, 86400);
   const body = await readJSON(request, 32 * 1024);
   const flow = await takeChallenge(env, body.flow, "reg");
   const {handle, userId} = flow.data;
