@@ -1103,6 +1103,8 @@ function wireSettings() {
     else if (a === "copy") copyPair(b);
     else if (a === "now") pullAndMerge(true);
     else if (a === "forget") forgetBrowser();
+    else if (a === "reset") { syncReset = true; renderSync(true); const t = $("sTok"); if (t) t.focus(); }
+    else if (a === "unreset") { syncReset = false; renderSync(true); }
     else if (a === "recheck") { b.textContent = "Checking…"; checkVault(true).then(() => renderSync(true)); }
   });
   $("exportBtn").addEventListener("click", () => {
@@ -1142,7 +1144,8 @@ const SYNC_OWNER = "CyberSecDigestDaily", SYNC_NAME = "dread-sync", SYNC_REPO = 
 const SYNC_API = "https://api.github.com/repos/" + SYNC_REPO;
 const KDF_ITER = 600000, CREDS = "dread.sync.v2", AAD_VAULT = "dread-vault-v1", AAD_STATE = "dread-state-v1";
 const NEW_REPO_URL = `https://github.com/new?owner=${SYNC_OWNER}&name=${SYNC_NAME}&visibility=public&description=${encodeURIComponent("Encrypted sync data for the Dread List")}`;
-const NEW_TOKEN_URL = `https://github.com/settings/personal-access-tokens/new?name=${encodeURIComponent("Dread List sync")}&description=${encodeURIComponent("Sync for cybersecdigestdaily.github.io/dread. Repository access: only dread-sync.")}&target_name=${SYNC_OWNER}&expires_in=366&contents=write`;
+const NEW_TOKEN_URL = `https://github.com/settings/personal-access-tokens/new?name=${encodeURIComponent("Dread List sync")}&description=${encodeURIComponent("Sync for dreadlist.co.uk. Repository access: only dread-sync.")}&target_name=${SYNC_OWNER}&expires_in=366&contents=write`;
+let syncReset = false;
 let sync = null, syncKey = null, shaState = null, lastPull = 0, syncState = {kind: null, text: "Ratings are saved in this browser only."};
 let vaultInfo = {checked: false, repo: null, vault: null};
 
@@ -1257,7 +1260,7 @@ let syncMode = null;
 function renderSync(force) {
   const box = $("syncBox");
   if (!box) return;
-  const mode = sync ? "on" : vaultInfo.vault ? "locked" : vaultInfo.checked ? "setup" : "checking";
+  const mode = sync ? "on" : vaultInfo.vault && !syncReset ? "locked" : vaultInfo.checked ? (syncReset ? "reset" : "setup") : "checking";
   if (mode === syncMode && !force && box.childElementCount) { const line = box.querySelector(".sync-status"); if (line) line.innerHTML = statusHTML(); return; }
   syncMode = mode;
   const user = `<input type="text" name="username" autocomplete="username" value="Dread List sync" class="sr" tabindex="-1" readonly aria-hidden="true">`;
@@ -1275,9 +1278,23 @@ function renderSync(force) {
       <form id="unlockForm" class="syncform">${user}
         <label for="uPass">Passphrase</label><input id="uPass" name="password" type="password" autocomplete="current-password" required>
         <label class="check"><input type="checkbox" id="uRemember" checked> Remember on this browser</label>
-        <div class="btns left"><button type="submit" class="btn">Unlock</button></div>
+        <div class="btns left"><button type="submit" class="btn">Unlock</button><button type="button" class="act quiet" data-sync="reset">Forgot your passphrase?</button></div>
       </form>
-      <p class="hint">If Firefox clears site data when it closes, let it save this passphrase and it will fill it in for you, or add an exception for cybersecdigestdaily.github.io under Settings, Privacy &amp; Security, Cookies and Site Data.</p>`;
+      <p class="hint">If Firefox clears site data when it closes, let it save this passphrase and it will fill it in for you, or add an exception for dreadlist.co.uk under Settings, Privacy &amp; Security, Cookies and Site Data.</p>`;
+  } else if (mode === "reset") {
+    body = `<p class="hint">A forgotten passphrase can’t be recovered: that’s what keeps your ratings private. Starting over sets a new passphrase. Ratings in this browser are kept and become the synced copy; anything that only lived in the old encrypted copy is lost.</p>
+      <p class="hint">Before you do this, check whether your password manager saved it (in Firefox: Settings, Passwords, search “dread” or “cybersecdigestdaily”).</p>
+      <ol class="steps">
+        <li><a href="https://github.com/settings/personal-access-tokens" target="_blank" rel="noopener noreferrer">Delete the old “Dread List sync” token</a>. It’s locked inside the old vault, so it’s no use any more.</li>
+        <li><a href="${NEW_TOKEN_URL}" target="_blank" rel="noopener noreferrer">Create a new token</a>. Under Repository access choose Only select repositories, then dread-sync, and press Generate token.</li>
+        <li>Paste it and choose a new passphrase of four or more random words. Let your browser save it this time.</li>
+      </ol>
+      <form id="setupForm" class="syncform" data-reset="1">${user}
+        <label for="sTok">New token</label><input id="sTok" type="password" autocomplete="off" spellcheck="false" placeholder="github_pat_…" required>
+        <label for="sPass">New passphrase</label><input id="sPass" name="password" type="password" autocomplete="new-password" minlength="12" required>
+        <label for="sPass2">New passphrase again</label><input id="sPass2" type="password" autocomplete="new-password" minlength="12" required>
+        <div class="btns left"><button type="submit" class="btn danger">Start sync over</button><button type="button" class="act quiet" data-sync="unreset">Back</button></div>
+      </form>`;
   } else if (mode === "setup") {
     body = `<p class="hint">Three one-off steps here. Every other browser then only needs your passphrase.</p>
       <ol class="steps">
@@ -1309,20 +1326,37 @@ async function doSetup(form) {
     if (repo.status === 404) throw new Error("Create the dread-sync repository first (step 1), then try again.");
     if (!repo.ok) throw httpError(repo);
     const existing = await ghFile("vault.json", token);
-    let key, salt, iter = KDF_ITER;
+    let key, salt, iter = KDF_ITER, wiped = false;
     if (existing) {
       iter = existing.data.iter || KDF_ITER;
       salt = existing.data.salt;
       key = await deriveKey(pass, fromB64(salt), iter);
-      try { await unseal(key, existing.data, AAD_VAULT); } catch (e) { throw new Error("Sync already exists with a different passphrase. Unlock it instead, or delete vault.json in dread-sync to start again."); }
+      let opened = true;
+      try { await unseal(key, existing.data, AAD_VAULT); } catch (e) { opened = false; }
+      if (!opened && form.dataset.reset !== "1") throw new Error("Sync already exists with a different passphrase. Unlock it instead, or use “Forgot your passphrase?” to start over.");
+      if (!opened) {
+        const s = crypto.getRandomValues(new Uint8Array(16));
+        salt = toB64(s); iter = KDF_ITER;
+        key = await deriveKey(pass, s, iter);
+        wiped = true;
+      }
     } else {
       const s = crypto.getRandomValues(new Uint8Array(16));
       salt = toB64(s);
       key = await deriveKey(pass, s, iter);
     }
     const res = await ghWrite("vault.json", token, Object.assign({v: 1, kdf: "PBKDF2-SHA256", iter, salt}, await seal(key, token, AAD_VAULT)),
-      existing && existing.sha, existing ? "Update the sync token" : "Set up sync");
+      existing && existing.sha, wiped ? "Start sync over with a new passphrase" : existing ? "Update the sync token" : "Set up sync");
     if (!res.ok) throw httpError(res);
+    if (wiped) {
+      const old = await ghFile("state.json", token);
+      if (old) {
+        const del = await fetch(`${SYNC_API}/contents/state.json`, {method: "DELETE", headers: ghHeaders(token, true), body: JSON.stringify({message: "Drop the copy sealed with the old passphrase", sha: old.sha})});
+        if (!del.ok) throw httpError(del);
+      }
+      shaState = null;
+    }
+    syncReset = false;
     await useCreds({token, key: await exportRaw(key)}, true);
     vaultInfo = {checked: true, repo: true, vault: true};
     await ensureReadme();
@@ -1364,7 +1398,7 @@ async function doReplaceToken(form) {
 async function ensureReadme() {
   try {
     if (await ghFile("README.md", sync.token)) return;
-    const text = "# dread-sync\n\nEncrypted sync data for the Dread List (https://cybersecdigestdaily.github.io/dread/).\n\n" +
+    const text = "# dread-sync\n\nEncrypted sync data for the Dread List (https://dreadlist.co.uk/).\n\n" +
       "- `vault.json`: the sync token, encrypted with a key derived from a passphrase (PBKDF2-SHA256, 600,000 rounds, AES-256-GCM).\n" +
       "- `state.json`: ratings and settings, encrypted with the same key. Its `taste` field is an optional plaintext summary (film ids only, no dates) used by the nightly rebuild and the weekly curator.\n\n" +
       "Every save from the page is a commit. Nothing here is readable without the passphrase except `taste`.\n";

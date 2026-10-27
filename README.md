@@ -1,6 +1,6 @@
 # The Dread List
 
-Live page: https://cybersecdigestdaily.github.io/dread/
+Live page: https://dreadlist.co.uk/
 
 A personal horror recommender for the UK. About 1,200 horror films, each with where it streams on your services tonight (with deep links), what's new this fortnight, what's leaving, the cheapest rental, IMDb and Rotten Tomatoes scores, its original language and a gore level. Every Want, Pass and 1–10 score retrains the ranking in the browser. Filter by any streaming service, by director, or to English-language films only; search finds films you've already seen too, and every film, rated or not, opens to its synopsis.
 
