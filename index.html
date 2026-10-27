@@ -4,12 +4,70 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
+<meta name="color-scheme" content="dark">
 <title>The Dread List has moved</title>
 <link rel="canonical" href="https://dreadlist.co.uk/">
-<meta http-equiv="refresh" content="0; url=https://dreadlist.co.uk/">
-<script>location.replace("https://dreadlist.co.uk/" + location.hash);</script>
+<noscript><meta http-equiv="refresh" content="0; url=https://dreadlist.co.uk/"></noscript>
+<style>
+  body{margin:0; background:#12110C; color:#EFE6B8; font:16px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
+  main{max-width:560px; margin:0 auto; padding:48px 20px}
+  h1{font-size:22px; margin:0 0 10px}
+  a{color:#E9D66B}
+  button{font:inherit; padding:10px 14px; border-radius:3px; border:1px solid #E9D66B; background:#E9D66B; color:#14130C; cursor:pointer; margin:6px 8px 0 0}
+  button.ghost{background:none; color:#EFE6B8; border-color:#2F2D1F}
+  .hint{color:#9E9671; font-size:14px}
+  [hidden]{display:none}
+</style>
 </head>
-<body style="background:#12110C;color:#EFE6B8;font:16px/1.5 system-ui,sans-serif;padding:40px">
-<p>The Dread List has moved to <a style="color:#E9D66B" href="https://dreadlist.co.uk/">dreadlist.co.uk</a>.</p>
+<body>
+<main>
+  <h1>The Dread List has moved to <a href="https://dreadlist.co.uk/">dreadlist.co.uk</a></h1>
+  <div id="move" hidden>
+    <p>This browser still has your list from the old page. Take it with you: it lands in your browser on the new site, and making an account there (a passkey, no email or password) keeps it on every device.</p>
+    <button type="button" id="take">Take my list to dreadlist.co.uk</button><button type="button" class="ghost" id="dl">Download a copy</button>
+    <p class="hint">Your list travels inside the link itself (the part after #), which never reaches any server. <a href="https://dreadlist.co.uk/" id="skip">Skip</a></p>
+  </div>
+  <p id="wait" class="hint">Taking you there…</p>
+</main>
+<script>
+(function () {
+  "use strict";
+  var NEW = "https://dreadlist.co.uk/";
+  function get(k) { try { return localStorage.getItem(k) || sessionStorage.getItem(k); } catch (e) { return null; } }
+  var st = get("dread.state.v1"), cr = get("dread.sync.v2");
+  var state = null, creds = null;
+  try { state = JSON.parse(st); } catch (e) { state = null; }
+  try { creds = JSON.parse(cr); } catch (e) { creds = null; }
+  var hasFilms = state && state.films && Object.keys(state.films).length > 0;
+  if (!hasFilms && !(creds && creds.token && creds.key)) { location.replace(NEW + location.hash); return; }
+  document.getElementById("wait").hidden = true;
+  document.getElementById("move").hidden = false;
+
+  function b64url(bytes) {
+    var s = "", i;
+    for (i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+  function download() {
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(state || {films: {}}, null, 1)], {type: "application/json"}));
+    a.download = "dread-list-" + new Date().toISOString().slice(0, 10) + ".json";
+    document.body.appendChild(a); a.click(); a.remove();
+  }
+  document.getElementById("dl").addEventListener("click", download);
+  document.getElementById("take").addEventListener("click", function () {
+    var btn = this;
+    btn.disabled = true; btn.textContent = "Packing…";
+    var payload = JSON.stringify({v: 1, state: state, creds: creds && creds.token && creds.key ? {token: creds.token, key: creds.key} : null});
+    if (typeof CompressionStream !== "function") { download(); location.href = NEW; return; }
+    var stream = new Blob([payload]).stream().pipeThrough(new CompressionStream("deflate-raw"));
+    new Response(stream).arrayBuffer().then(function (buf) {
+      var data = b64url(new Uint8Array(buf));
+      if (data.length > 1500000) { download(); location.href = NEW; return; }
+      location.href = NEW + "#move=" + data;
+    }).catch(function () { download(); location.href = NEW; });
+  });
+})();
+</script>
 </body>
 </html>
