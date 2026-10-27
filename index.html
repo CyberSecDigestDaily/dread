@@ -2,113 +2,14 @@
 <html lang="en-GB">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self' https://api.github.com; base-uri 'none'; form-action 'none'">
-<meta name="referrer" content="no-referrer">
-<meta name="robots" content="noindex, nofollow">
-<meta name="color-scheme" content="dark light">
-<meta name="theme-color" content="#12110C" media="(prefers-color-scheme: dark)">
-<meta name="theme-color" content="#E9E0AF" media="(prefers-color-scheme: light)">
-<title>Dread List</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%23FF4433'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="style.css">
-<script src="app.js" defer></script>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>The Dread List has moved</title>
+<link rel="canonical" href="https://dreadlist.co.uk/">
+<meta http-equiv="refresh" content="0; url=https://dreadlist.co.uk/">
+<script>location.replace("https://dreadlist.co.uk/" + location.hash);</script>
 </head>
-<body>
-<a class="skip" href="#main">Skip to the list</a>
-
-<header class="top">
-  <div class="top-in">
-    <a class="brand" href="#for" aria-label="Dread List, for you"><i class="rec" aria-hidden="true"></i><span>Dread List</span></a>
-    <nav class="tabs" aria-label="Views">
-      <a href="#for" data-view="for">For you</a>
-      <a href="#want" data-view="want">Watchlist <span class="n" id="nWant"></span></a>
-      <a href="#rated" data-view="rated">Rated <span class="n" id="nRated"></span></a>
-      <a href="#taste" data-view="taste">Taste</a>
-    </nav>
-    <button type="button" class="gear" id="openSettings" aria-label="Settings and sync">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Zm7.4-2.5a7.6 7.6 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.4 7.4 0 0 0-1.7-1L15 3.3h-4l-.4 2.6a7.4 7.4 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.6 7.6 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1c.5.4 1.1.7 1.7 1l.4 2.6h4l.4-2.6c.6-.3 1.2-.6 1.7-1l2.5 1 2-3.5-2.3-1.6Z"/></svg>
-      <span class="dot" id="syncDot" aria-hidden="true"></span>
-    </button>
-  </div>
-</header>
-
-<main id="main">
-  <div class="syncnote" id="syncNote" role="region" aria-label="Sync" hidden></div>
-  <p class="boot" id="boot">Loading the pool…</p>
-
-  <section id="view-for" class="view" hidden aria-label="For you">
-    <div class="tonight" id="tonight"></div>
-    <div class="strips" id="strips"></div>
-    <div class="bar" id="barFor"></div>
-    <div class="list" id="listFor"></div>
-    <button type="button" class="more" id="moreFor" hidden>Show 40 more</button>
-  </section>
-
-  <section id="view-want" class="view" hidden aria-label="Watchlist">
-    <div class="bar" id="barWant"></div>
-    <div class="list" id="listWant"></div>
-  </section>
-
-  <section id="view-rated" class="view" hidden aria-label="Rated">
-    <div class="rated-head" id="ratedHead"></div>
-    <div class="list" id="listRated"></div>
-  </section>
-
-  <section id="view-taste" class="view" hidden aria-label="Taste">
-    <div id="taste"></div>
-  </section>
-</main>
-
-<footer class="foot">
-  <p class="keys" id="keys"><kbd>j</kbd><kbd>k</kbd> move <kbd>o</kbd> details <kbd>w</kbd> want <kbd>x</kbd> pass <kbd>1</kbd>–<kbd>9</kbd> <kbd>0</kbd> score <kbd>u</kbd> undo <kbd>/</kbd> search <kbd>r</kbd> roll</p>
-  <p id="source"></p>
-</footer>
-
-<dialog id="settings" aria-labelledby="set-h">
-  <div class="dlg">
-    <div class="dlg-head">
-      <h2 id="set-h">Settings</h2>
-      <button type="button" class="x" id="closeSettings" aria-label="Close settings">Close</button>
-    </div>
-
-    <section class="fs" aria-labelledby="sync-h">
-      <h3 id="sync-h">Sync across devices</h3>
-      <div id="syncBox"></div>
-    </section>
-
-    <fieldset>
-      <legend>Services you pay for</legend>
-      <p class="hint">Films on these count as watch-tonight. HBO Max comes with NOW Entertainment since March 2026; newer Sky Cinema films need NOW Cinema.</p>
-      <div class="checks" id="svcChecks"></div>
-      <label class="check"><input type="checkbox" id="cfgFree"> Count free services: Tubi, BBC iPlayer, Channel 4, ITVX, My5, Plex, Pluto TV, Amazon MX Player, YouTube</label>
-    </fieldset>
-
-    <fieldset>
-      <legend>Hide films flagged for</legend>
-      <div class="checks" id="flagChecks"></div>
-    </fieldset>
-
-    <fieldset>
-      <legend>Theme</legend>
-      <div class="seg" id="themeSeg" role="group" aria-label="Theme">
-        <button type="button" data-theme-set="auto">Match device</button>
-        <button type="button" data-theme-set="dark">Dark</button>
-        <button type="button" data-theme-set="light">Light</button>
-      </div>
-    </fieldset>
-
-    <fieldset>
-      <legend>Your data</legend>
-      <div class="btns left">
-        <button type="button" class="btn ghost" id="exportBtn">Export ratings</button>
-        <label class="btn ghost file">Import ratings<input type="file" id="importFile" accept="application/json,.json"></label>
-        <button type="button" class="btn ghost danger" id="resetBtn">Clear all ratings</button>
-      </div>
-    </fieldset>
-  </div>
-</dialog>
-
-<div class="toast" id="toast" role="status" aria-live="polite" hidden><span id="toastText"></span><button type="button" id="toastUndo">Undo</button></div>
+<body style="background:#12110C;color:#EFE6B8;font:16px/1.5 system-ui,sans-serif;padding:40px">
+<p>The Dread List has moved to <a style="color:#E9D66B" href="https://dreadlist.co.uk/">dreadlist.co.uk</a>.</p>
 </body>
 </html>
