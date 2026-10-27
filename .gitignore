@@ -1,3 +1,5 @@
 docs/p/
 docs/fonts/
 __pycache__/
+.wrangler/
+node_modules/

@@ -34,7 +34,9 @@ UA = "Mozilla/5.0 (X11; Linux x86_64) dread-list/2.0 (+https://github.com/CyberS
 TODAY = dt.date.today()
 NEW_DAYS = 14
 KEEP_DAYS = 120  # a discovered film stays this long after it was last discovered, so ratings never lose their film
-# Optional, opt-in taste summary written by the page (film ids only, no dates). Public, so no secret is needed.
+# Opt-in taste hints (film ids only: no names, scores or dates), pooled from accounts that switched on "Help grow
+# the pool", plus the older single-user summary in dread-sync. Both are public, so no secret is needed.
+HINTS_URL = "https://dreadlist.co.uk/api/hints"
 TASTE_URL = "https://raw.githubusercontent.com/CyberSecDigestDaily/dread-sync/main/state.json"
 
 CONTENT = """content(country: GB, language: "en") { title originalTitle originalReleaseYear fullPath shortDescription runtime
@@ -547,14 +549,22 @@ def fetch_posters(films):
 
 
 def load_taste():
-    """The page's opt-in taste summary: {"loved": [ids], "liked": [...], "meh", "disliked", "want", "pass"}."""
-    try:
-        req = urllib.request.Request(TASTE_URL, headers={"user-agent": UA, "cache-control": "no-cache"})
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            taste = (json.load(resp) or {}).get("taste") or {}
-    except Exception:  # no sync repo yet, or sharing is off
-        return {}
-    return {k: [str(i) for i in v][:2000] for k, v in taste.items() if isinstance(v, list)}
+    """Opt-in taste hints: {"loved": [ids], "liked": [...], "want": [...], "pass": [...]} merged from the site's
+    accounts (HINTS_URL) and the old single-user sync summary (TASTE_URL). Missing sources are skipped."""
+    merged = {}
+    for url, pick in ((HINTS_URL, lambda j: j), (TASTE_URL, lambda j: j.get("taste") or {})):
+        try:
+            req = urllib.request.Request(url, headers={"user-agent": UA, "cache-control": "no-cache", "accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                taste = pick(json.load(resp) or {})
+        except Exception:  # not deployed yet, offline, or sharing is off
+            continue
+        for k, v in taste.items():
+            if isinstance(v, list):
+                merged.setdefault(k, [])
+                merged[k] += [str(i) for i in v if str(i) not in merged[k]]
+    log(f"Taste hints: {sum(len(v) for v in merged.values())} ids")
+    return {k: v[:2000] for k, v in merged.items()}
 
 
 # ---------- Main ----------

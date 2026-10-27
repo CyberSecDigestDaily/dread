@@ -60,7 +60,10 @@ button{cursor:pointer}
 .gear:hover{color:var(--ink)}
 .gear .dot{position:absolute; right:3px; top:4px; width:8px; height:8px; border-radius:50%; background:var(--faint); border:2px solid var(--bg)}
 .gear .dot.on{background:var(--good)} .gear .dot.busy{background:var(--g-M)} .gear .dot.err{background:var(--rec)}
-@media (max-width:620px){ .brand{font-size:28px} .tabs{order:3; flex-basis:100%; margin:0 -6px} .gear{margin-left:auto} }
+.who{background:none; border:1px solid var(--rule); border-radius:3px; padding:5px 10px; margin:0 0 8px; font-size:13px; color:var(--ink); max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.who:hover{border-color:var(--ink)}
+.who.on{color:var(--muted); font-family:var(--f-mono); font-size:12px}
+@media (max-width:620px){ .top-in{column-gap:10px} .brand{font-size:28px} .tabs{order:3; flex-basis:100%; margin:0 -6px} .who{margin-left:auto; max-width:132px; padding:5px 8px} .gear{margin-left:0} }
 
 main{max-width:1180px; margin:0 auto; padding:0 max(16px, env(safe-area-inset-right,0px)) 40px max(16px, env(safe-area-inset-left,0px))}
 .boot{color:var(--muted); padding:40px 0}
@@ -390,8 +393,85 @@ a.btn{text-decoration:none}
 .syncnote span{flex:1 1 260px}
 .syncnote .btn{padding:6px 12px; font-size:13px}
 
+/* Accounts */
+.authcols{display:grid; gap:18px; margin:14px 0 16px}
+@media (min-width:560px){ .authcols{grid-template-columns:1fr 1fr} }
+.authcol{display:grid; gap:4px; align-content:start}
+.authcol h3, .fs h4{margin:0 0 2px; font-size:14px; font-weight:600}
+.fs h4{margin-top:10px}
+.dlg .authcol input[type="text"]{max-width:100%}
+.linkish{all:unset; cursor:pointer; color:var(--ink); border-bottom:1px solid var(--rule); font-size:13px; line-height:1.9}
+.linkish:hover{border-bottom-color:var(--ink)}
+.linkish:focus-visible{outline:2px solid var(--hi); outline-offset:2px}
+.ways{margin:4px 0 0}
+.hint.small{font-size:12px}
+.hint a{color:var(--ink)}
+.codes{margin:0; padding:10px 12px 10px 34px; display:grid; grid-template-columns:repeat(auto-fill, minmax(200px, 1fr)); gap:4px 18px; background:var(--bg); border:1px dashed var(--rule); border-radius:3px}
+.codes code, .bigcode code, .invite code{font:400 14px/1.6 var(--f-mono); letter-spacing:.04em}
+.bigcode{margin:6px 0}
+.bigcode code{font-size:26px; font-family:var(--f-osd); letter-spacing:.12em; color:var(--hi)}
+.invite{margin:6px 0; overflow-wrap:anywhere}
+.invite code{font-size:12px}
+.acct-sec{border-top:1px solid var(--rule); padding-top:8px}
+.acct-sec > summary{font-size:14px; font-weight:500; padding:2px 0}
+.acct-sec[open] > summary{margin-bottom:8px}
+.acct-sec > *:not(summary){margin-bottom:8px}
+.row{display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px}
+.row label{flex-basis:100%; margin:0 !important}
+.row input[type="text"], .row input[type="password"]{flex:1 1 200px; width:auto; min-width:0; padding:8px 10px; border:1px solid var(--rule); border-radius:3px; background:var(--bg); font-size:14px}
+.klist{list-style:none; margin:0; padding:0; display:grid; gap:2px}
+.klist li{display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:4px 10px; padding:6px 0; border-bottom:1px solid var(--rule); font-size:14px}
+.klist li:last-child{border-bottom:0}
+.klist small{display:block; color:var(--muted); font-size:12px}
+.kact{display:flex; gap:6px}
+.kact .act{min-height:28px; padding:3px 8px; font-size:12px}
+.pill{display:inline-block; font-size:11px; line-height:1; padding:3px 6px; border:1px solid var(--good); color:var(--good); border-radius:2px; vertical-align:1px; margin-left:4px}
+
+/* Together and profiles */
+.tg-intro{margin:22px 0 10px; max-width:72ch}
+.tg-intro h2{font-size:22px; font-weight:600}
+.tg-intro p{margin:6px 0 10px}
+.tg-intro.prof h2{font-family:var(--f-mono); font-weight:400}
+.tg-lists{list-style:none; margin:10px 0 18px; padding:0; display:grid; gap:8px}
+@media (min-width:760px){ .tg-lists{grid-template-columns:1fr 1fr} }
+.tg-lists a{display:grid; gap:2px; padding:12px 14px; border:1px solid var(--rule); border-radius:3px; background:var(--panel); text-decoration:none}
+.tg-lists a:hover{border-color:var(--ink)}
+.tg-lists b{font-size:16px}
+.tg-lists span{font-size:13px; color:var(--muted)}
+.newlist{max-width:520px; margin:10px 0 8px}
+.newlist label{font-size:12px; color:var(--muted)}
+.back{margin:18px 0 6px; font-size:13px}
+.back a{color:var(--muted)} .back a:hover{color:var(--ink)}
+.tg-title{display:flex; align-items:baseline; gap:12px; flex-wrap:wrap}
+.tg-title h2{font-size:24px; font-weight:600}
+.members{display:flex; flex-wrap:wrap; align-items:center; gap:6px 14px; margin:8px 0 12px; font-size:14px}
+.members small{color:var(--muted)}
+.members .act{margin-left:auto}
+#tgInvite{margin:0 0 14px}
+.tg-alone{margin:0 0 10px}
+.tg-tonight{margin-top:6px}
+.why .mem{color:var(--ink); border:1px solid var(--rule); border-radius:2px; padding:0 5px; line-height:18px}
+.why .mem b{font-weight:500; color:var(--hi)}
+.why .mem.r b{color:var(--good)}
+.tg-done{margin-top:22px}
+.tg-done summary{font-weight:600; padding:6px 0; border-bottom:2px solid var(--ink)}
+.tg-done summary span{font-weight:400; font-size:13px; color:var(--muted); margin-left:6px}
+.tg-foot{margin-top:24px}
+.badge.theirs{border-color:var(--hi); color:var(--ink); font-family:var(--f-mono); font-weight:400}
+.badge.theirs.s-low{border-color:var(--rec)} .badge.theirs.s-mid{border-color:var(--g-M)} .badge.theirs.s-good{border-color:var(--good)}
+.rated-head .seg button span{color:var(--faint); margin-left:4px}
+.rated-head .seg button[aria-pressed="true"] span{color:inherit; opacity:.7}
+
 /* Toast */
 .toast{position:fixed; left:50%; bottom:calc(18px + env(safe-area-inset-bottom,0px)); transform:translateX(-50%); z-index:60; display:flex; align-items:center; gap:14px; padding:10px 12px 10px 16px; background:var(--ink); color:var(--bg); border-radius:4px; font-size:14px; max-width:calc(100vw - 24px); box-shadow:0 6px 24px rgba(0,0,0,.35)}
 .toast button{background:none; border:1px solid currentColor; border-radius:3px; padding:4px 10px; color:inherit; font-size:13px}
 
 @media (prefers-reduced-motion: reduce){ .rec{animation:none} html{scroll-behavior:auto} }
+
+/* Privacy page */
+.prose{max-width:72ch; padding-top:10px}
+.prose h1{font:400 40px/1 var(--f-osd); margin:26px 0 6px}
+.prose h2{font-size:16px; margin:24px 0 6px}
+.prose p, .prose li{color:var(--ink)}
+.prose ul{padding-left:20px; display:grid; gap:6px}
+.prose a{color:var(--hi)}

@@ -7,7 +7,8 @@ on:
   push:
     branches: [main]
     # Editing the list, the script or the page re-checks and republishes straight away. Data commits don't retrigger.
-    paths: ["films.json", "refresh.py", "docs/index.html", "docs/app.js", "docs/style.css", "docs/vendor/**", ".github/workflows/refresh.yml"]
+    paths: ["films.json", "refresh.py", "docs/index.html", "docs/app.js", "docs/account.js", "docs/together.js", "docs/style.css",
+            "docs/privacy.html", "docs/_headers", "docs/vendor/**", "worker/**", "wrangler.jsonc", ".github/workflows/refresh.yml"]
   workflow_dispatch: # manual "Run workflow" button
 
 concurrency:
@@ -64,21 +65,24 @@ jobs:
           done
           ls -l "$RUNNER_TEMP/fonts"
 
-      - name: Publish the page to gh-pages
+      # Cloudflare Workers Builds deploys whatever lands on the deploy branch: the Worker, its config, and the page
+      # with fonts and posters. Each publish is one fresh commit, so the branch never grows.
+      - name: Publish the site to the deploy branch
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           site="$(mktemp -d)"
-          cp -R docs/. "$site"/
-          mkdir -p "$site/fonts"
-          cp "$RUNNER_TEMP"/fonts/*.woff2 "$site/fonts/" 2>/dev/null || true
-          touch "$site/.nojekyll"
-          echo "dreadlist.co.uk" > "$site/CNAME"   # keep the custom domain: a force-push without it drops dreadlist.co.uk
-          echo "$(ls "$site/p" 2>/dev/null | wc -l) posters published"
+          cp -R worker wrangler.jsonc "$site"/
+          mkdir -p "$site/docs/fonts"
+          cp -R docs/. "$site/docs/"
+          cp "$RUNNER_TEMP"/fonts/*.woff2 "$site/docs/fonts/" 2>/dev/null || true
+          printf '%s\n' "# Built by the Dread list refresh workflow from main. Cloudflare Workers Builds deploys this branch." \
+            "# Don't edit here: change main and let the workflow republish." > "$site/README.md"
+          echo "$(ls "$site/docs/p" 2>/dev/null | wc -l) posters, $(ls "$site/docs/fonts" | wc -l) fonts"
           cd "$site"
-          git init -q -b gh-pages
+          git init -q -b deploy
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -q -m "Publish $(date -u +%Y-%m-%dT%H:%MZ)"
-          git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
+          git commit -q -m "Deploy $(date -u +%Y-%m-%dT%H:%MZ) from ${GITHUB_SHA::7}"
+          git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" deploy

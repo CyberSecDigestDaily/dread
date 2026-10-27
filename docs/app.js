@@ -1,7 +1,8 @@
 "use strict";
 /* Dread List: a horror recommender that learns from your buttons.
    data.json is rebuilt daily by refresh.py (JustWatch UK + Wikidata). Ratings, wants, passes and settings live in
-   this browser and can sync to a private GitHub repo. No third-party requests from the page itself. */
+   this browser, and in your account if you sign in (account.js); shared lists and profiles are in together.js.
+   No third-party requests from the page itself. */
 
 /* ---------- Config ---------- */
 const SVC = {
@@ -115,11 +116,10 @@ function normState(s) {
   return out;
 }
 const EMPTY = Object.freeze({});
+/* Your entry for a film. The original single-user page's profile ratings (SEED, from films.json) no longer apply to
+   everyone: they're only offered as an import (account.js) to the browsers that used that page. */
 function eff(id) {
-  const e = state.films[id];
-  if (e) return e;
-  const s = SEED.get(id);
-  return s ? {s, r: tierOf(s), seen: 1, src: "profile"} : EMPTY;
+  return state.films[id] || EMPTY;
 }
 const sig = e => e.s ? SCORE_SIG[e.s] : e.x ? SIG_PASS : e.w ? SIG_WANT : null;
 const isDone = e => !!(e.s || e.seen);
@@ -148,11 +148,12 @@ function setEntry(id, entry, label) {
   if (entry.s || entry.w || entry.x) entry.f = (state.films[id] && state.films[id].f) || snap(BY.get(id));
   state.films[id] = Object.assign({t: nowISO()}, entry);
   saveLocal();
-  queuePush();
+  queuePush([id]);
   refresh();
   if (label) toast(label, true);
 }
-function saveLocal() { store.set(KEY_STATE, state); }
+/* Guests keep their list in this browser; signed-in lists are cached here too and saved to the account. */
+function saveLocal() { persistState(); }
 
 /* ---------- Data ---------- */
 const V1_SUBS = {"Prime Video": "pv", "Shudder": "sh", "Netflix": "nf", "Disney+": "dp", "NOW": "nowc", "HBO Max": "hbo", "Paramount+": "pp", "Apple TV+": "atv", "MUBI": "mubi"};
@@ -258,14 +259,14 @@ function featLabel(k) {
    +2.5 for a 10), want +0.6, pass -1, pulled toward 0 (or a small prior) until there is evidence. A film's fit is the sum of its
    feature affinities over the square root of its feature mass. JustWatch's similar-titles graph adds a boost for
    neighbours of films you rated, and IMDb/Rotten Tomatoes add a small quality term. */
-function learn() {
+/* Learn feature affinities from [features, signal] pairs. Shared by your own model and, in Together, everyone's. */
+function learnFrom(items) {
   const num = new Map(), den = new Map(), cnt = new Map();
   let signals = 0;
-  for (const f of FILMS) {
-    const s = sig(eff(f.id));
-    if (s == null) continue;
+  for (const [feats, s] of items) {
+    if (s == null || !feats) continue;
     signals++;
-    for (const [k, w] of FEAT.get(f.id)) {
+    for (const [k, w] of feats) {
       num.set(k, (num.get(k) || 0) + s * w);
       den.set(k, (den.get(k) || 0) + w);
       cnt.set(k, (cnt.get(k) || 0) + 1);
@@ -273,7 +274,10 @@ function learn() {
   }
   const aff = new Map();
   new Set([...den.keys(), ...Object.keys(PRIOR)]).forEach(k => aff.set(k, (SHRINK * (PRIOR[k] || 0) + (num.get(k) || 0)) / (SHRINK + (den.get(k) || 0))));
-  M = {aff, cnt, signals};
+  return {aff, cnt, signals};
+}
+function learn() {
+  M = learnFrom(FILMS.map(f => [FEAT.get(f.id), sig(eff(f.id))]));
 }
 function quality(f) {
   let q = 0;
@@ -282,26 +286,35 @@ function quality(f) {
   return q;
 }
 const matchPct = T => Math.round(100 / (1 + Math.exp(-1.25 * (T - 1.25))));
-function scoreAll() {
-  for (const f of FILMS) {
-    let s = 0, mass = 0, unk = 0;
-    for (const [k, w] of FEAT.get(f.id)) {
-      s += w * (M.aff.get(k) || 0); mass += w; unk += w / (1 + (M.cnt.get(k) || 0));
-    }
-    const fit = mass ? s / Math.sqrt(mass) : 0;
-    let nb = 0, pos = null, neg = null, best = 0, worst = 0;
-    for (const j of NEIGH.get(f.id) || []) {
-      const sj = sig(eff(j));
-      if (sj == null || Math.abs(sj) < 0.9) continue;
-      nb += 0.35 * sj;
-      if (sj > best) { best = sj; pos = j; }
-      if (sj < worst) { worst = sj; neg = j; }
-    }
-    nb = clamp(nb, -1.2, 1.2);
-    f._fit = fit; f._nb = nb; f._q = quality(f); f._pos = pos; f._neg = neg; f._unk = mass ? unk / mass : 1;
-    f._T = fit + nb + f._q;
-    f._m = matchPct(f._T);
+/* Feature fit of a film under a model, and how much of it the model hasn't seen yet. */
+function fitOf(model, f) {
+  let s = 0, mass = 0, unk = 0;
+  for (const [k, w] of FEAT.get(f.id) || []) {
+    s += w * (model.aff.get(k) || 0); mass += w; unk += w / (1 + (model.cnt.get(k) || 0));
   }
+  return {fit: mass ? s / Math.sqrt(mass) : 0, unk: mass ? unk / mass : 1};
+}
+/* Boost from JustWatch's similar-titles graph: neighbours of films with a strong signal. sigOf(id) gives the signal. */
+function neighbourBoost(sigOf, f) {
+  let nb = 0, pos = null, neg = null, best = 0, worst = 0;
+  for (const j of NEIGH.get(f.id) || []) {
+    const sj = sigOf(j);
+    if (sj == null || Math.abs(sj) < 0.9) continue;
+    nb += 0.35 * sj;
+    if (sj > best) { best = sj; pos = j; }
+    if (sj < worst) { worst = sj; neg = j; }
+  }
+  return {nb: clamp(nb, -1.2, 1.2), pos, neg};
+}
+function scoreFilm(f) {
+  const {fit, unk} = fitOf(M, f);
+  const {nb, pos, neg} = neighbourBoost(id => sig(eff(id)), f);
+  f._fit = fit; f._nb = nb; f._q = quality(f); f._pos = pos; f._neg = neg; f._unk = unk;
+  f._T = fit + nb + f._q;
+  f._m = matchPct(f._T);
+}
+function scoreAll() {
+  for (const f of FILMS) scoreFilm(f);
 }
 function reasons(f) {
   const pos = [], neg = [];
@@ -331,7 +344,9 @@ function avail(f) {
   const tonight = own.length > 0 || free.length > 0;
   return {own, free, other, leave, tonight};
 }
-const jwLink = f => f.jw ? "https://www.justwatch.com" + f.jw : "https://www.justwatch.com/uk/search?q=" + encodeURIComponent(f.t);
+/* Film data can come from other people (profiles, shared lists), so links are only ever built on known hosts. */
+const safePath = p => typeof p === "string" && /^\/[a-z]{2}\/[a-z0-9-]+(\/[a-z0-9-]+)*$/.test(p);
+const jwLink = f => safePath(f.jw) ? "https://www.justwatch.com" + f.jw : "https://www.justwatch.com/uk/search?q=" + encodeURIComponent(f.t);
 
 /* ---------- Filtering and ranking ---------- */
 const isCandidate = f => { const e = eff(f.id); return !e.s && !e.seen && !e.x && !f.gone; };
@@ -441,8 +456,9 @@ function forYouList() {
 }
 
 /* ---------- Rendering: shared pieces ---------- */
+const posterOk = f => f.px && typeof f.jid === "string" && /^[a-z]{1,4}\d{1,12}$/.test(f.jid);
 function posterHTML(f, cls, w, h) {
-  return f.px ? `<img class="${cls}" src="p/${esc(f.jid)}.webp" alt="" loading="lazy" decoding="async" width="${w}" height="${h}">`
+  return posterOk(f) ? `<img class="${cls}" src="/p/${esc(f.jid)}.webp" alt="" loading="lazy" decoding="async" width="${w}" height="${h}">`
     : `<span class="${cls} blank" aria-hidden="true">?</span>`;
 }
 function matchClass(m) { return m >= 85 ? "hot" : m < 50 ? "cool" : ""; }
@@ -485,6 +501,7 @@ function dirHTML(f) {
 }
 function badgesHTML(f, a) {
   const b = [], e = eff(f.id);
+  if (ui.view === "profile" && typeof theirBadge === "function") b.push(theirBadge(f));
   if (e.x) b.push(`<span class="badge">Passed</span>`);
   if (f.p && !isDone(e)) b.push(`<span class="badge pick">Start here</span>`);
   if (ui.wild.has(f.id)) b.push(`<span class="badge wild" title="Picked to test something the model hasn't learned yet">Wildcard</span>`);
@@ -558,7 +575,7 @@ function detailHTML(f, a) {
     .sort((x, y) => (sig(eff(y.id)) || 0) - (sig(eff(x.id)) || 0) || y._T - x._T).slice(0, 8)
     .map(s => { const se = eff(s.id); return `<button type="button" data-act="jump" data-id2="${esc(s.id)}">${esc(s.t)} <span class="${se.s ? "r" : ""}">${se.s ? se.s + "/10" : s._m + "%"}</span></button>`; }).join("");
   const meta = [];
-  if (e.s) meta.push(`<dt>Your rating</dt><dd><b class="${scoreClass(e.s)}">${e.s}/10</b> ${esc(SCORE_WORD[e.s])}<small>${e.src === "profile" ? " · from your profile" : e.t ? " · " + esc(new Date(e.t).toLocaleDateString("en-GB", {day: "numeric", month: "short", year: "numeric"})) : ""}</small></dd>`);
+  if (e.s) meta.push(`<dt>Your rating</dt><dd><b class="${scoreClass(e.s)}">${e.s}/10</b> ${esc(SCORE_WORD[e.s])}<small>${e.src === "profile" ? " · imported profile rating" : e.t ? " · " + esc(new Date(e.t).toLocaleDateString("en-GB", {day: "numeric", month: "short", year: "numeric"})) : ""}</small></dd>`);
   if ((f.dir || []).length) meta.push(`<dt>Director</dt><dd>${f.dir.map(d => `<button type="button" class="tag" data-act="dir" data-key="${esc(d)}" title="Only films by ${esc(d)}">${esc(d)}</button>`).join(" ")}</dd>`);
   if (f.lg) meta.push(`<dt>Language</dt><dd>${esc(langName(f.lg))}, subtitled</dd>`);
   if (f.ot) meta.push(`<dt>Original title</dt><dd>${esc(f.ot)}</dd>`);
@@ -567,7 +584,7 @@ function detailHTML(f, a) {
   if (f.rn) meta.push(`<dt>Runtime</dt><dd>${runtime(f.rn)}</dd>`);
   if (f.aka) meta.push(`<dt>Also</dt><dd>${esc(f.aka)}</dd>`);
   const links = [`<a href="${esc(jwLink(f))}" target="_blank" rel="noopener noreferrer">JustWatch</a>`];
-  if (f.imdb) links.push(`<a href="https://www.imdb.com/title/${esc(f.imdb)}/" target="_blank" rel="noopener noreferrer">IMDb</a>`, `<a href="https://letterboxd.com/imdb/${esc(f.imdb)}/" target="_blank" rel="noopener noreferrer">Letterboxd</a>`);
+  if (/^tt\d{5,10}$/.test(f.imdb || "")) links.push(`<a href="https://www.imdb.com/title/${esc(f.imdb)}/" target="_blank" rel="noopener noreferrer">IMDb</a>`, `<a href="https://letterboxd.com/imdb/${esc(f.imdb)}/" target="_blank" rel="noopener noreferrer">Letterboxd</a>`);
   links.push(`<a href="https://www.youtube.com/results?search_query=${encodeURIComponent(f.t + " " + (f.y || "") + " trailer")}" target="_blank" rel="noopener noreferrer">Trailer</a>`);
   const pct = n => (n >= 0 ? "+" : "−") + Math.abs(n).toFixed(2);
   const synopsis = f.w && f.d ? `<h4>Synopsis</h4><p>${esc(f.d)}</p>` : !f.w && !f.d ? `<h4>Synopsis</h4><p class="hint">No synopsis saved for this one.</p>` : "";
@@ -582,6 +599,7 @@ function detailHTML(f, a) {
     <div>
       <h4>Where to watch in the UK</h4><ul class="offers">${offers.join("")}</ul>
       ${meta.length ? `<h4>Details</h4><dl>${meta.join("")}</dl>` : ""}
+      ${typeof listPickHTML === "function" ? listPickHTML(f) : ""}
       <h4>Links</h4><div class="links">${links.join("")}</div>
     </div>
   </div>`;
@@ -595,7 +613,7 @@ function renderTonight() {
   const top = pool.slice(0, 6), f = top[ui.roll % top.length], a = avail(f);
   box.innerHTML = `<div class="lab"><h2><i class="rec" aria-hidden="true"></i>Tonight’s tape</h2><span class="sub">Best match you can watch now</span>
       <button type="button" class="act quiet roll" data-act="roll" title="Roll again (r)">Roll again</button></div>
-    ${f.px ? `<img src="p/${esc(f.jid)}.webp" alt="" width="92" height="138">` : ""}
+    ${posterOk(f) ? `<img src="/p/${esc(f.jid)}.webp" alt="" width="92" height="138">` : ""}
     <div class="film-lite" data-id="${esc(f.id)}">
       <p class="tt"><span class="big">${f._m}%</span> <button type="button" data-act="jumpopen" data-id2="${esc(f.id)}">${esc(f.t)}</button> <span class="yr">${esc(f.y || "")}</span></p>
       <div class="meta">${watchHTML(f, a)}${factsHTML(f)}</div>
@@ -737,7 +755,7 @@ function renderRated(keepHead) {
     .sort(RSORTS[ui.rsort] || RSORTS.recent);
   $("listRated").innerHTML = list.length ? list.map(rowHTML).join("") : `<p class="empty">${all.length ? "Nothing here matches." : "No ratings yet. Press Seen it on anything you’ve watched."}</p>`;
   $("rcount").innerHTML = `<span>${list.length === all.length ? `${all.length} film${all.length === 1 ? "" : "s"}` : `${list.length} of ${all.length}`}${n ? `, average ${(sum / n).toFixed(1)}` : ""}</span>` +
-    `<span class="sub">Tap a title for the synopsis. Change a score and the model relearns instantly; “from your profile” means it came from what you told Claude.</span>`;
+    `<span class="sub">Tap a title for the synopsis. Change a score and the model relearns instantly; “imported profile rating” means it came from the original single-user page.</span>`;
 }
 function barsHTML(rows, max) {
   return `<ul class="bars">${rows.map(([k, v, n]) => {
@@ -788,7 +806,7 @@ function renderTaste() {
     <div class="taste-grid">
       <section><h2>What pulls you in</h2><p>Learned from your ratings, wants and passes. Tap one to filter For you by it.</p>${pos.length ? barsHTML(pos, 2) : `<p class="hint">Rate a few films to see this.</p>`}</section>
       <section><h2>What pushes you away</h2><p>Negative affinity. These sink films down the list rather than hiding them.</p>${neg.length ? barsHTML(neg, 2) : `<p class="hint">Nothing yet. Pass on or score a few films low.</p>`}
-        <h2 class="gap">Gore tolerance</h2><p>Your affinity for each gore level. Extreme starts slightly negative from what you’ve said about Hostel and Texas Chainsaw.</p>${barsHTML(gore, 2)}</section>
+        <h2 class="gap">Gore tolerance</h2><p>Your affinity for each gore level. Extreme starts slightly negative until your own ratings say otherwise.</p>${barsHTML(gore, 2)}</section>
     </div>
     <section class="taste-plan"><h2>Rotate in this month</h2><p class="sub">Your best unseen matches that aren’t on your services, and the cheapest single subscription that unlocks most of them. Cancel after a month, then rotate.</p>
       ${plan.length ? `<ol class="plan">${plan.map(p => {
@@ -800,7 +818,7 @@ function renderTaste() {
     <div class="how">
       <p><b>How the recommendations work.</b> Every film is a bag of features: subgenre tags (hand-picked, from Wikidata and from the synopsis), director, decade, where it’s from, whether it’s subtitled, gore level and length. Each button you press is a signal: scores run from −2.5 for a 1 (Hated) through −0.5 for a 5 (Meh) and +1 for a 7 (Liked) to +2.5 for a 10 (Favourite); Want is +0.6 and Pass −1. Your affinity for a feature is the average signal across films that have it, pulled toward zero until there’s enough evidence.</p>
       <p>A film’s score adds up its feature affinities, a boost when JustWatch lists it as similar to something you rated, and a small nudge from IMDb and Rotten Tomatoes. Every seventh slot is a wildcard: a well-reviewed film built from features you haven’t rated yet, so the model keeps learning instead of narrowing.</p>
-      <p>The pool rebuilds every morning from JustWatch UK: popular, trending and newly added horror, everything near your rated films, and the hand-picked list. ${FILMS.filter(f => f.cur).length} films are hand-picked.</p>
+      <p>The pool rebuilds every morning from JustWatch UK: popular, trending and newly added horror, everything near films people chose to share (Settings, Help grow the pool), and the hand-picked list. ${FILMS.filter(f => f.cur).length} films are hand-picked.</p>
     </div>`;
   document.querySelectorAll("#taste .trk i").forEach(i => i.style.setProperty("--w", i.dataset.w));
 }
@@ -811,6 +829,7 @@ function counts() {
   const r = FILMS.filter(f => isDone(eff(f.id))).length;
   $("nWant").textContent = w ? w : "";
   $("nRated").textContent = r ? r : "";
+  if (typeof renderNote === "function") renderNote();
 }
 function refresh(opts) {
   if (FILMS.length) { topUpSnaps(); if (adoptGone()) buildDirs(); }
@@ -830,18 +849,33 @@ function renderView(opts) {
   if (v === "for") renderFor(keep && !!$("q"));
   else if (v === "want") renderWant(keep && !!$("q"));
   else if (v === "rated") renderRated(keep && !!$("rq"));
+  else if (v === "together") renderTogether(keep);
+  else if (v === "profile") renderProfile(keep);
   else renderTaste();
   if (opts && opts.keepScroll !== false) window.scrollTo(0, y);
 }
+/* Views: #for, #want, #rated, #together (and #together/<list id>), #taste, and public profiles at /u/<name>. */
+let routedPath = location.pathname;
 function route() {
-  const v = (location.hash || "#for").slice(1);
-  const next = ["for", "want", "rated", "taste"].includes(v) ? v : "for";
+  routedPath = location.pathname;
+  const pm = /^\/u\/([A-Za-z0-9_-]{1,40})\/?$/.exec(location.pathname);
+  const h = (location.hash || "#for").slice(1);
+  let next = "for";
+  if (pm) { next = "profile"; ui.profileName = pm[1].toLowerCase(); }
+  else if (/^together(\/[A-Za-z0-9_-]{16})?$/.test(h)) { next = "together"; ui.listId = h.split("/")[1] || null; }
+  else if (["for", "want", "rated", "taste"].includes(h)) next = h;
   if (next !== ui.view && !ui.jumping) { ui.q = ""; ui.loose = false; }
   ui.jumping = false;
   ui.view = next;
   ui.focus = null;
   refresh({keepScroll: false});
   window.scrollTo(0, 0);
+}
+/* Go to a view from anywhere, including from a profile page (a different path) without reloading. */
+function go(hash) {
+  if (location.pathname !== "/") { history.pushState(null, "", "/" + hash); route(); }
+  else if (location.hash !== hash) location.hash = hash;
+  else route();
 }
 
 /* ---------- Actions ---------- */
@@ -863,11 +897,9 @@ function act(id, what, extra) {
 function undoLast() {
   const u = undo.pop();
   if (!u) { toast("Nothing to undo"); return; }
-  let entry = u.prev;
-  if (!entry) entry = SEED.has(u.id) ? {s: SEED.get(u.id), r: tierOf(SEED.get(u.id)), seen: 1, src: "profile"} : {};
-  state.films[u.id] = Object.assign({}, entry, {t: nowISO()});
+  state.films[u.id] = Object.assign({}, u.prev || {}, {t: nowISO()});
   saveLocal();
-  queuePush();
+  queuePush([u.id]);
   refresh({keepBar: true});
   toast("Undone");
 }
@@ -892,16 +924,16 @@ function jump(id, open) {
   if (open) ui.open.add(id);
   if (isDone(eff(id))) {
     ui.rf = "all"; ui.rq = "";
-    if (ui.view !== "rated") location.hash = "#rated"; else refresh();
+    if (ui.view !== "rated") go("#rated"); else refresh();
   } else {
     ui.q = f.t; ui.tag = null; ui.dir = ""; ui.svc = new Set(); ui.len = "any"; ui.shown = PAGE; ui.loose = true; ui.jumping = true;
-    if (ui.view !== "for") location.hash = "#for"; else { ui.jumping = false; refresh(); }
+    if (ui.view !== "for") go("#for"); else { ui.jumping = false; refresh(); }
   }
   setTimeout(() => focusRow(id), 30);
 }
 function setDir(name) {
   ui.dir = name || ""; ui.shown = PAGE; ui.loose = false;
-  if (ui.view === "rated" || ui.view === "taste") location.hash = "#for"; else refresh();
+  if (ui.view !== "for" && ui.view !== "want") go("#for"); else refresh();
 }
 /* The director box takes an exact name from the list, or the best partial match when you press Enter or leave it. */
 function dirFrom(text, partial) {
@@ -920,6 +952,14 @@ function refocus(sel) {
 /* ---------- Events ---------- */
 function wire() {
   window.addEventListener("hashchange", route);
+  window.addEventListener("popstate", () => { if (location.pathname !== routedPath) route(); });
+  // Tabs and the brand are links to /#view; on a profile page, switch views without a reload.
+  document.addEventListener("click", e => {
+    const a = e.target.closest(".tabs a, a.brand");
+    if (!a || e.metaKey || e.ctrlKey || e.shiftKey || e.button) return;
+    const hash = new URL(a.href).hash;
+    if (location.pathname !== "/") { e.preventDefault(); go(hash); }
+  });
   // A poster that fails to load (e.g. a film that has left the pool) becomes a blank tile instead of a broken image.
   document.addEventListener("error", e => {
     const t = e.target;
@@ -943,7 +983,7 @@ function wire() {
       const key = b.dataset.key;
       if (key.startsWith("d:")) { setDir(key.slice(2)); return; }
       ui.tag = key; ui.q = ""; ui.loose = false; ui.shown = PAGE;
-      if (ui.view !== "for") location.hash = "#for"; else refresh();
+      if (ui.view !== "for") go("#for"); else refresh();
       window.scrollTo(0, $("barFor").offsetTop - 60);
       return;
     }
@@ -1047,7 +1087,7 @@ function wire() {
 function setCfg(patch, rebar) {
   state.cfg = cfg = Object.assign({}, cfg, patch, {t: nowISO()});
   saveLocal();
-  queuePush();
+  queuePush("cfg");
   applyTheme();
   fillSettings();
   refresh({keepBar: !rebar});
@@ -1064,9 +1104,7 @@ function fillSettings() {
   $("flagChecks").innerHTML = Object.entries(FLAGS).map(([k, l]) => `<label class="check"><input type="checkbox" data-flag="${k}"${cfg.hide[k] ? " checked" : ""}> ${esc(l)}</label>`).join("");
   $("cfgFree").checked = !!cfg.free;
   document.querySelectorAll("[data-theme-set]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.themeSet === cfg.theme)));
-  const share = $("cfgShare");
-  if (share) share.checked = cfg.share === 1;
-  renderSync();
+  renderAccountBox();
 }
 function openSettings(focusId) {
   const d = $("settings");
@@ -1074,7 +1112,6 @@ function openSettings(focusId) {
   if (typeof d.showModal === "function") { if (!d.open) d.showModal(); } else d.setAttribute("open", "");
   const focus = () => { const el = focusId && $(focusId); if (el) el.focus(); };
   setTimeout(focus, 30);
-  if (!sync) checkVault(true).then(() => { renderSync(); setTimeout(focus, 30); });
 }
 function wireSettings() {
   const d = $("settings");
@@ -1085,27 +1122,7 @@ function wireSettings() {
     if (t.dataset.svc) setCfg({svc: Object.assign({}, cfg.svc, {[t.dataset.svc]: t.checked ? 1 : 0})});
     else if (t.dataset.flag) setCfg({hide: Object.assign({}, cfg.hide, {[t.dataset.flag]: t.checked ? 1 : 0})});
     else if (t.id === "cfgFree") setCfg({free: t.checked ? 1 : 0});
-    else if (t.id === "cfgShare") setCfg({share: t.checked ? 1 : 0});
     else if (t.id === "importFile" && t.files && t.files[0]) importFile(t.files[0]);
-  });
-  d.addEventListener("submit", e => {
-    e.preventDefault();
-    const f = e.target;
-    if (f.id === "unlockForm") doUnlock(f);
-    else if (f.id === "setupForm") doSetup(f);
-    else if (f.id === "tokenForm") doReplaceToken(f);
-  });
-  d.addEventListener("click", e => {
-    const b = e.target.closest("[data-sync]");
-    if (!b) return;
-    const a = b.dataset.sync;
-    if (a === "pair") showPair();
-    else if (a === "copy") copyPair(b);
-    else if (a === "now") pullAndMerge(true);
-    else if (a === "forget") forgetBrowser();
-    else if (a === "reset") { syncReset = true; renderSync(true); const t = $("sTok"); if (t) t.focus(); }
-    else if (a === "unreset") { syncReset = false; renderSync(true); }
-    else if (a === "recheck") { b.textContent = "Checking…"; checkVault(true).then(() => renderSync(true)); }
   });
   $("exportBtn").addEventListener("click", () => {
     const blob = new Blob([JSON.stringify(state, null, 1)], {type: "application/json"});
@@ -1116,444 +1133,59 @@ function wireSettings() {
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   });
   $("resetBtn").addEventListener("click", () => {
-    if (!confirm("Clear every rating, want and pass, including the ones from your profile? Export first if you might want them back.")) return;
-    const t = nowISO();
-    for (const id of new Set([...Object.keys(state.films), ...SEED.keys()])) state.films[id] = {t};
-    saveLocal(); queuePush(); refresh(); toast("Cleared all ratings");
+    if (!confirm(`Clear every rating, want and pass${acct.user ? " in your account, on every device" : " in this browser"}? Export first if you might want them back.`)) return;
+    const t = nowISO(), ids = Object.keys(state.films);
+    for (const id of ids) state.films[id] = {t};
+    saveLocal(); queuePush(ids); refresh(); toast("Cleared all ratings");
   });
 }
 function importFile(file) {
   const r = new FileReader();
   r.onload = () => {
     try {
-      const incoming = normState(JSON.parse(r.result));
+      const raw = JSON.parse(r.result), incoming = normState(raw);
+      if (!raw || typeof raw !== "object" || !raw.films) throw new Error("not an export");
       state = merge(state, incoming); cfg = state.cfg;
-      saveLocal(); queuePush(); applyTheme(); fillSettings(); refresh();
+      saveLocal(); queuePush(Object.keys(incoming.films)); if (raw.cfg) queuePush("cfg"); applyTheme(); fillSettings(); refresh();
       toast(`Imported ${Object.keys(incoming.films).length} entries`);
-    } catch (e) { syncErr("That file isn’t a Dread List export."); }
+    } catch (e) { toast("That file isn’t a Dread List export."); }
   };
   r.readAsText(file);
 }
 
-/* ---------- Sync: end-to-end encrypted in the public dread-sync repo ----------
-   vault.json holds the GitHub token encrypted with a key derived from your passphrase (PBKDF2-SHA256, 600,000 rounds,
-   AES-256-GCM). state.json holds your ratings and settings encrypted with the same key. Any browser that knows the
-   passphrase can unlock the token and sync. GitHub only ever stores ciphertext, plus an optional taste summary
-   (film ids, no dates) that the nightly rebuild and the weekly curator read. The token can only touch dread-sync. */
-const SYNC_OWNER = "CyberSecDigestDaily", SYNC_NAME = "dread-sync", SYNC_REPO = SYNC_OWNER + "/" + SYNC_NAME;
-const SYNC_API = "https://api.github.com/repos/" + SYNC_REPO;
-const KDF_ITER = 600000, CREDS = "dread.sync.v2", AAD_VAULT = "dread-vault-v1", AAD_STATE = "dread-state-v1";
-const NEW_REPO_URL = `https://github.com/new?owner=${SYNC_OWNER}&name=${SYNC_NAME}&visibility=public&description=${encodeURIComponent("Encrypted sync data for the Dread List")}`;
-const NEW_TOKEN_URL = `https://github.com/settings/personal-access-tokens/new?name=${encodeURIComponent("Dread List sync")}&description=${encodeURIComponent("Sync for dreadlist.co.uk. Repository access: only dread-sync.")}&target_name=${SYNC_OWNER}&expires_in=366&contents=write`;
-let syncReset = false;
-let sync = null, syncKey = null, shaState = null, lastPull = 0, syncState = {kind: null, text: "Ratings are saved in this browser only."};
-let vaultInfo = {checked: false, repo: null, vault: null};
-
-const te = new TextEncoder(), td = new TextDecoder();
-const toB64 = bytes => { let s = ""; new Uint8Array(bytes).forEach(b => { s += String.fromCharCode(b); }); return btoa(s); };
-const fromB64 = s => Uint8Array.from(atob(String(s).replace(/\s/g, "")), c => c.charCodeAt(0));
-const b64enc = str => toB64(te.encode(str));
-const b64dec = s => td.decode(fromB64(s));
-const b64url = str => b64enc(str).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-const unb64url = s => { const t = s.replace(/-/g, "+").replace(/_/g, "/"); return b64dec(t + "=".repeat((4 - t.length % 4) % 4)); };
-const timeNow = () => new Date().toLocaleTimeString("en-GB", {hour: "2-digit", minute: "2-digit"});
-
-async function deriveKey(pass, salt, iter) {
-  const base = await crypto.subtle.importKey("raw", te.encode(pass.normalize("NFKC")), "PBKDF2", false, ["deriveKey"]);
-  return crypto.subtle.deriveKey({name: "PBKDF2", hash: "SHA-256", salt, iterations: iter}, base, {name: "AES-GCM", length: 256}, true, ["encrypt", "decrypt"]);
-}
-async function seal(key, text, aad) {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ct = await crypto.subtle.encrypt({name: "AES-GCM", iv, additionalData: te.encode(aad)}, key, te.encode(text));
-  return {iv: toB64(iv), ct: toB64(ct)};
-}
-async function unseal(key, box, aad) {
-  return td.decode(await crypto.subtle.decrypt({name: "AES-GCM", iv: fromB64(box.iv), additionalData: te.encode(aad)}, key, fromB64(box.ct)));
-}
-const importRaw = b64 => crypto.subtle.importKey("raw", fromB64(b64), {name: "AES-GCM"}, true, ["encrypt", "decrypt"]);
-const exportRaw = async key => toB64(await crypto.subtle.exportKey("raw", key));
-
-function ghHeaders(token, json) {
-  return Object.assign({"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"},
-    token ? {"Authorization": "Bearer " + token} : {}, json ? {"Content-Type": "application/json"} : {});
-}
-function httpError(res) {
-  const e = new Error(res.status === 401 ? "GitHub rejected the token: it has expired or been revoked. Replace it under Sync in Settings."
-    : res.status === 403 ? "The token can’t write to dread-sync. It needs Contents: read and write on that repository."
-    : res.status === 404 ? "dread-sync wasn’t found, or the token can’t see it."
-    : `GitHub returned an error (${res.status}).`);
-  e.status = res.status;
-  return e;
-}
-async function ghFile(path, token) {
-  const res = await fetch(`${SYNC_API}/contents/${path}`, {cache: "no-store", headers: ghHeaders(token)});
-  if (res.status === 404) return null;
-  if (!res.ok) throw httpError(res);
-  const j = await res.json();
-  return {sha: j.sha, data: JSON.parse(b64dec(j.content))};
-}
-function ghWrite(path, token, data, sha, message) {
-  return fetch(`${SYNC_API}/contents/${path}`, {method: "PUT", headers: ghHeaders(token, true),
-    body: JSON.stringify(Object.assign({message, content: b64enc(JSON.stringify(data) + "\n")}, sha ? {sha} : {}))});
-}
-
-/* Credentials on this browser: localStorage when remembered, sessionStorage otherwise. */
-function loadCreds() {
-  for (const s of ["localStorage", "sessionStorage"]) {
-    try { const c = JSON.parse(window[s].getItem(CREDS)); if (c && c.token && c.key) return c; } catch (e) { /* blocked */ }
-  }
-  return null;
-}
-function credsRemembered() { try { return !!localStorage.getItem(CREDS); } catch (e) { return false; } }
-function dropCreds() { for (const s of ["localStorage", "sessionStorage"]) { try { window[s].removeItem(CREDS); } catch (e) { /* blocked */ } } }
-async function useCreds(c, remember) {
-  syncKey = await importRaw(c.key);
-  sync = {token: c.token, key: c.key};
-  dropCreds();
-  try { (remember ? localStorage : sessionStorage).setItem(CREDS, JSON.stringify(sync)); } catch (e) { /* storage blocked: synced for this page only */ }
-}
-
-function setStatus(kind, text) {
-  syncState = {kind, text};
-  $("syncDot").className = "dot" + (kind ? " " + kind : "");
-  $("openSettings").title = text;
-  const line = document.querySelector("#syncBox .sync-status");
-  if (line) line.innerHTML = statusHTML();
-  syncNote();
-}
-const statusHTML = () => `<span class="dot${syncState.kind ? " " + syncState.kind : ""}" aria-hidden="true"></span>${esc(syncState.text)}`;
-function syncErr(text) {
-  const e = $("sErr");
-  if (e) { e.textContent = text; e.hidden = false; } else toast(text);
-}
-function busy(form, on, label) {
-  const b = form.querySelector("button[type=submit]");
-  if (!b) return;
-  if (on) { b.dataset.label = b.textContent; b.textContent = label; b.disabled = true; const e = $("sErr"); if (e) e.hidden = true; }
-  else { b.disabled = false; if (b.dataset.label) b.textContent = b.dataset.label; }
-}
-
-async function checkVault(force) {
-  if (vaultInfo.checked && !force) return vaultInfo;
-  try {
-    const r = await fetch(SYNC_API, {cache: "no-store", headers: ghHeaders()});
-    const repo = r.ok ? true : r.status === 404 ? false : null;
-    vaultInfo = {checked: true, repo, vault: repo ? !!(await ghFile("vault.json")) : false};
-  } catch (e) { vaultInfo = {checked: true, repo: null, vault: null}; }
-  if (!sync && vaultInfo.vault) setStatus(null, "Sync is set up but locked on this browser.");
-  syncNote();
-  return vaultInfo;
-}
-function syncNote() {
-  const n = $("syncNote");
-  if (!n) return;
-  let dismissed = false;
-  try { dismissed = sessionStorage.getItem("dread.note") === "1"; } catch (e) { /* blocked */ }
-  if (sync || dismissed || !vaultInfo.checked || vaultInfo.vault === null) { n.hidden = true; return; }
-  n.innerHTML = vaultInfo.vault
-    ? `<span>Your ratings aren’t syncing on this browser.</span><button type="button" class="btn" data-note="open">Unlock sync</button><button type="button" class="act quiet" data-note="hide">Not now</button>`
-    : `<span>Rate on your phone, laptop and PC alike: sync takes two minutes to set up.</span><button type="button" class="btn" data-note="open">Set up sync</button><button type="button" class="act quiet" data-note="hide">Not now</button>`;
-  n.hidden = false;
-}
-
-let syncMode = null;
-function renderSync(force) {
-  const box = $("syncBox");
-  if (!box) return;
-  const mode = sync ? "on" : vaultInfo.vault && !syncReset ? "locked" : vaultInfo.checked ? (syncReset ? "reset" : "setup") : "checking";
-  if (mode === syncMode && !force && box.childElementCount) { const line = box.querySelector(".sync-status"); if (line) line.innerHTML = statusHTML(); return; }
-  syncMode = mode;
-  const user = `<input type="text" name="username" autocomplete="username" value="Dread List sync" class="sr" tabindex="-1" readonly aria-hidden="true">`;
-  let body = "";
-  if (mode === "on") {
-    body = `<p class="hint">Ratings, wants, passes and settings follow you to every browser you unlock. They’re saved encrypted in <a href="https://github.com/${SYNC_REPO}" target="_blank" rel="noopener noreferrer">${SYNC_NAME}</a>.</p>
-      <div class="btns left"><button type="button" class="btn" data-sync="pair">Add a device</button><button type="button" class="btn ghost" data-sync="now">Sync now</button><button type="button" class="btn ghost" data-sync="forget">Forget this browser</button></div>
-      <div id="pairBox" class="pair" hidden><div id="qr" class="qr"></div><div><p class="hint">Scan this with your phone’s camera, or send yourself the link. It carries your sync key: anyone with it can read and change your ratings, so keep it to yourself.</p><div class="btns left"><button type="button" class="btn ghost" data-sync="copy">Copy link</button></div></div></div>
-      <label class="check"><input type="checkbox" id="cfgShare"${cfg.share === 1 ? " checked" : ""}> <span>Tailor new films to me: publish a taste summary in ${SYNC_NAME} (the ids of films you rated, grouped as loved, liked, meh or disliked, wanted or passed; no scores, no dates, nothing else). The nightly rebuild then pulls in films similar to them and the Sunday curator reads it. Off means everything stays encrypted.</span></label>
-      <details><summary>Replace the token</summary><form id="tokenForm" class="syncform">
-        <label for="rTok">New token</label><input id="rTok" type="password" autocomplete="off" spellcheck="false" placeholder="github_pat_…" required>
-        <div class="btns left"><button type="submit" class="btn">Save token</button><a class="btn ghost" href="${NEW_TOKEN_URL}" target="_blank" rel="noopener noreferrer">Create a token</a></div></form></details>`;
-  } else if (mode === "locked") {
-    body = `<p class="hint">Sync is set up. Unlock it on this browser with your passphrase.</p>
-      <form id="unlockForm" class="syncform">${user}
-        <label for="uPass">Passphrase</label><input id="uPass" name="password" type="password" autocomplete="current-password" required>
-        <label class="check"><input type="checkbox" id="uRemember" checked> Remember on this browser</label>
-        <div class="btns left"><button type="submit" class="btn">Unlock</button><button type="button" class="act quiet" data-sync="reset">Forgot your passphrase?</button></div>
-      </form>
-      <p class="hint">If Firefox clears site data when it closes, let it save this passphrase and it will fill it in for you, or add an exception for dreadlist.co.uk under Settings, Privacy &amp; Security, Cookies and Site Data.</p>`;
-  } else if (mode === "reset") {
-    body = `<p class="hint">A forgotten passphrase can’t be recovered: that’s what keeps your ratings private. Starting over sets a new passphrase. Ratings in this browser are kept and become the synced copy; anything that only lived in the old encrypted copy is lost.</p>
-      <p class="hint">Before you do this, check whether your password manager saved it (in Firefox: Settings, Passwords, search “dread” or “cybersecdigestdaily”).</p>
-      <ol class="steps">
-        <li><a href="https://github.com/settings/personal-access-tokens" target="_blank" rel="noopener noreferrer">Delete the old “Dread List sync” token</a>. It’s locked inside the old vault, so it’s no use any more.</li>
-        <li><a href="${NEW_TOKEN_URL}" target="_blank" rel="noopener noreferrer">Create a new token</a>. Under Repository access choose Only select repositories, then dread-sync, and press Generate token.</li>
-        <li>Paste it and choose a new passphrase of four or more random words. Let your browser save it this time.</li>
-      </ol>
-      <form id="setupForm" class="syncform" data-reset="1">${user}
-        <label for="sTok">New token</label><input id="sTok" type="password" autocomplete="off" spellcheck="false" placeholder="github_pat_…" required>
-        <label for="sPass">New passphrase</label><input id="sPass" name="password" type="password" autocomplete="new-password" minlength="12" required>
-        <label for="sPass2">New passphrase again</label><input id="sPass2" type="password" autocomplete="new-password" minlength="12" required>
-        <div class="btns left"><button type="submit" class="btn danger">Start sync over</button><button type="button" class="act quiet" data-sync="unreset">Back</button></div>
-      </form>`;
-  } else if (mode === "setup") {
-    body = `<p class="hint">Three one-off steps here. Every other browser then only needs your passphrase.</p>
-      <ol class="steps">
-        <li><a href="${NEW_REPO_URL}" target="_blank" rel="noopener noreferrer">Create the dread-sync repository</a>. Everything is prefilled; just press Create repository. Your ratings are encrypted before they’re saved there.
-          ${vaultInfo.repo ? `<span class="okay">Found it.</span>` : `<button type="button" class="act quiet" data-sync="recheck">I’ve created it</button>`}</li>
-        <li><a href="${NEW_TOKEN_URL}" target="_blank" rel="noopener noreferrer">Create a token</a>. Name, expiry and Contents: Read and write are prefilled. Under Repository access choose Only select repositories, then dread-sync, and press Generate token.</li>
-        <li>Paste the token and choose a passphrase of four or more random words.</li>
-      </ol>
-      <form id="setupForm" class="syncform">${user}
-        <label for="sTok">Token</label><input id="sTok" type="password" autocomplete="off" spellcheck="false" placeholder="github_pat_…" required>
-        <label for="sPass">Passphrase</label><input id="sPass" name="password" type="password" autocomplete="new-password" minlength="12" required>
-        <label for="sPass2">Passphrase again</label><input id="sPass2" type="password" autocomplete="new-password" minlength="12" required>
-        <div class="btns left"><button type="submit" class="btn">Turn on sync</button></div>
-      </form>`;
-  } else {
-    body = `<p class="hint">Checking for sync…</p>`;
-  }
-  box.innerHTML = `<p class="sync-status">${statusHTML()}</p>${body}<p class="err" id="sErr" hidden></p>`;
-}
-
-async function doSetup(form) {
-  const token = form.querySelector("#sTok").value.trim(), pass = form.querySelector("#sPass").value, pass2 = form.querySelector("#sPass2").value;
-  if (!/^(github_pat_|ghp_)\w{20,}$/.test(token)) { syncErr("That doesn’t look like a GitHub token. It should start with github_pat_."); return; }
-  if (pass.length < 12) { syncErr("Use a passphrase of at least 12 characters. Four random words works well."); return; }
-  if (pass !== pass2) { syncErr("The two passphrases don’t match."); return; }
-  busy(form, true, "Turning on sync…");
-  try {
-    const repo = await fetch(SYNC_API, {cache: "no-store", headers: ghHeaders(token)});
-    if (repo.status === 404) throw new Error("Create the dread-sync repository first (step 1), then try again.");
-    if (!repo.ok) throw httpError(repo);
-    const existing = await ghFile("vault.json", token);
-    let key, salt, iter = KDF_ITER, wiped = false;
-    if (existing) {
-      iter = existing.data.iter || KDF_ITER;
-      salt = existing.data.salt;
-      key = await deriveKey(pass, fromB64(salt), iter);
-      let opened = true;
-      try { await unseal(key, existing.data, AAD_VAULT); } catch (e) { opened = false; }
-      if (!opened && form.dataset.reset !== "1") throw new Error("Sync already exists with a different passphrase. Unlock it instead, or use “Forgot your passphrase?” to start over.");
-      if (!opened) {
-        const s = crypto.getRandomValues(new Uint8Array(16));
-        salt = toB64(s); iter = KDF_ITER;
-        key = await deriveKey(pass, s, iter);
-        wiped = true;
-      }
-    } else {
-      const s = crypto.getRandomValues(new Uint8Array(16));
-      salt = toB64(s);
-      key = await deriveKey(pass, s, iter);
-    }
-    const res = await ghWrite("vault.json", token, Object.assign({v: 1, kdf: "PBKDF2-SHA256", iter, salt}, await seal(key, token, AAD_VAULT)),
-      existing && existing.sha, wiped ? "Start sync over with a new passphrase" : existing ? "Update the sync token" : "Set up sync");
-    if (!res.ok) throw httpError(res);
-    if (wiped) {
-      const old = await ghFile("state.json", token);
-      if (old) {
-        const del = await fetch(`${SYNC_API}/contents/state.json`, {method: "DELETE", headers: ghHeaders(token, true), body: JSON.stringify({message: "Drop the copy sealed with the old passphrase", sha: old.sha})});
-        if (!del.ok) throw httpError(del);
-      }
-      shaState = null;
-    }
-    syncReset = false;
-    await useCreds({token, key: await exportRaw(key)}, true);
-    vaultInfo = {checked: true, repo: true, vault: true};
-    await ensureReadme();
-    await pullAndMerge(true);
-    renderSync(true);
-    toast("Sync is on. Unlock your other browsers with the passphrase.");
-  } catch (e) { busy(form, false); syncErr(e.message); }
-}
-async function doUnlock(form) {
-  const pass = form.querySelector("#uPass").value, remember = form.querySelector("#uRemember").checked;
-  busy(form, true, "Unlocking…");
-  try {
-    const v = await ghFile("vault.json");
-    if (!v) throw new Error("Sync isn’t set up yet. Set it up on one browser first.");
-    const key = await deriveKey(pass, fromB64(v.data.salt), v.data.iter || KDF_ITER);
-    let token;
-    try { token = await unseal(key, v.data, AAD_VAULT); } catch (e) { throw new Error("That passphrase doesn’t unlock sync."); }
-    await useCreds({token, key: await exportRaw(key)}, remember);
-    await pullAndMerge(true);
-    renderSync(true);
-    toast("Sync unlocked on this browser");
-  } catch (e) { busy(form, false); syncErr(e.message); }
-}
-async function doReplaceToken(form) {
-  const token = form.querySelector("#rTok").value.trim();
-  if (!/^(github_pat_|ghp_)\w{20,}$/.test(token)) { syncErr("That doesn’t look like a GitHub token. It should start with github_pat_."); return; }
-  busy(form, true, "Saving…");
-  try {
-    const cur = await ghFile("vault.json", token);
-    if (!cur) throw new Error("vault.json is missing from dread-sync. Forget this browser and set sync up again.");
-    const res = await ghWrite("vault.json", token, Object.assign({}, cur.data, await seal(syncKey, token, AAD_VAULT)), cur.sha, "Replace the sync token");
-    if (!res.ok) throw httpError(res);
-    await useCreds({token, key: sync.key}, credsRemembered());
-    await pullAndMerge(true);
-    renderSync(true);
-    toast("Token replaced. Other browsers pick it up next time you unlock them.");
-  } catch (e) { busy(form, false); syncErr(e.message); }
-}
-async function ensureReadme() {
-  try {
-    if (await ghFile("README.md", sync.token)) return;
-    const text = "# dread-sync\n\nEncrypted sync data for the Dread List (https://dreadlist.co.uk/).\n\n" +
-      "- `vault.json`: the sync token, encrypted with a key derived from a passphrase (PBKDF2-SHA256, 600,000 rounds, AES-256-GCM).\n" +
-      "- `state.json`: ratings and settings, encrypted with the same key. Its `taste` field is an optional plaintext summary (film ids only, no dates) used by the nightly rebuild and the weekly curator.\n\n" +
-      "Every save from the page is a commit. Nothing here is readable without the passphrase except `taste`.\n";
-    await fetch(`${SYNC_API}/contents/README.md`, {method: "PUT", headers: ghHeaders(sync.token, true), body: JSON.stringify({message: "Explain the files", content: b64enc(text)})});
-  } catch (e) { /* optional */ }
-}
-function forgetBrowser() {
-  if (!confirm("Stop syncing on this browser? Your ratings stay here and in sync, and you can unlock again with your passphrase.")) return;
-  dropCreds();
-  sync = null; syncKey = null; shaState = null;
-  vaultInfo = {checked: true, repo: true, vault: true};
-  setStatus(null, "Sync is locked on this browser.");
-  renderSync(true);
-}
-
-/* Pairing: a link carrying the token and key in the URL fragment, which browsers never send to a server. */
-const pairLink = () => location.origin + location.pathname + "#pair=" + b64url(JSON.stringify({t: sync.token, k: sync.key}));
-function loadScript(src) {
-  return new Promise((ok, fail) => {
-    if (window.qrcode) { ok(); return; }
-    const s = document.createElement("script");
-    s.src = src; s.onload = ok; s.onerror = fail;
-    document.head.append(s);
-  });
-}
-function qrSVG(text) {
-  const qr = window.qrcode(0, "L");
-  qr.addData(text);
-  qr.make();
-  const n = qr.getModuleCount(), m = 4;
-  let d = "";
-  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (qr.isDark(r, c)) d += `M${c + m} ${r + m}h1v1h-1z`;
-  return `<svg viewBox="0 0 ${n + 2 * m} ${n + 2 * m}" width="240" height="240" shape-rendering="crispEdges" role="img" aria-label="QR code for the pairing link"><rect width="100%" height="100%" fill="#fff"/><path d="${d}" fill="#000"/></svg>`;
-}
-async function showPair() {
-  const box = $("pairBox");
-  if (!box || !sync) return;
-  box.hidden = !box.hidden;
-  if (box.hidden) return;
-  try { await loadScript("vendor/qrcode.js"); $("qr").innerHTML = qrSVG(pairLink()); }
-  catch (e) { $("qr").textContent = "The QR code didn’t load. Copy the link instead."; }
-}
-async function copyPair(btn) {
-  try { await navigator.clipboard.writeText(pairLink()); btn.textContent = "Copied"; }
-  catch (e) { window.prompt("Copy this link", pairLink()); }
-  setTimeout(() => { btn.textContent = "Copy link"; }, 2000);
-}
-async function acceptPair() {
-  const m = /^#pair=([A-Za-z0-9_-]+)$/.exec(location.hash);
-  if (!m) return false;
-  history.replaceState(null, "", location.pathname + location.search + "#for");
-  try {
-    const c = JSON.parse(unb64url(m[1]));
-    if (!c.t || !c.k) throw new Error("bad link");
-    await useCreds({token: c.t, key: c.k}, true);
-    toast("This browser is now synced");
-    return true;
-  } catch (e) {
-    toast("That pairing link didn’t work. Unlock with your passphrase in Settings instead.");
-    return false;
-  }
-}
-/* State file: pull, merge by per-film timestamps, push. */
-async function pullRemote() {
-  const f = await ghFile("state.json", sync.token);
-  if (!f) { shaState = null; return normState(null); }
-  shaState = f.sha;
-  if (!f.data || !f.data.ct) return normState(null);
-  try { return normState(JSON.parse(await unseal(syncKey, f.data, AAD_STATE))); }
-  catch (e) { throw new Error("Couldn’t decrypt the synced ratings. If the passphrase changed on another browser, forget this one and unlock again."); }
-}
+/* Merge two states film by film: the newer timestamp wins, the same rule as account sync. */
 function merge(a, b) {
-  const out = {v: 2, films: Object.assign({}, a.films), cfg: a.cfg};
+  const out = {v: 3, films: Object.assign({}, a.films), cfg: a.cfg};
   for (const [id, e] of Object.entries(b.films || {})) { const cur = out.films[id]; if (!cur || String(e.t || "") > String(cur.t || "")) out.films[id] = e; }
   if (b.cfg && String(b.cfg.t || "") > String((a.cfg && a.cfg.t) || "")) out.cfg = b.cfg;
   return out;
 }
-const same = (a, b) => JSON.stringify([Object.entries(a.films).sort(), a.cfg]) === JSON.stringify([Object.entries(b.films).sort(), b.cfg]);
-function tasteSummary() {
-  const t = {updated: todayISO(), loved: [], liked: [], meh: [], disliked: [], want: [], pass: [], svc: OWNABLE.filter(k => cfg.svc[k])};
-  for (const f of FILMS) {
-    const e = eff(f.id);
-    if (e.s) t[tierOf(e.s)].push(f.id); else if (e.w) t.want.push(f.id); else if (e.x) t.pass.push(f.id);
-  }
-  return t;
-}
-async function pushNow() {
-  const body = async () => Object.assign({v: 1}, await seal(syncKey, JSON.stringify(state), AAD_STATE), cfg.share === 1 && FILMS.length ? {taste: tasteSummary()} : {});
-  const msg = () => `Sync ${nowISO().slice(0, 16)}Z`;
-  let res = await ghWrite("state.json", sync.token, await body(), shaState, msg());
-  if (res.status === 409 || res.status === 422) {
-    const remote = await pullRemote();
-    state = merge(state, remote); cfg = state.cfg; saveLocal();
-    res = await ghWrite("state.json", sync.token, await body(), shaState, msg());
-  }
-  if (!res.ok) throw httpError(res);
-  shaState = (await res.json()).content.sha;
-}
-let pushTimer = null, pushing = false, again = false;
-function queuePush() {
-  if (!sync) return;
-  setStatus("busy", "Saving…");
-  clearTimeout(pushTimer);
-  pushTimer = setTimeout(runPush, 1200);
-}
-async function runPush() {
-  if (pushing) { again = true; return; }
-  pushing = true;
-  try { await pushNow(); setStatus("on", `Synced at ${timeNow()}`); }
-  catch (e) { setStatus("err", e.message + " Ratings are still saved in this browser."); }
-  finally { pushing = false; if (again) { again = false; runPush(); } }
-}
-async function pullAndMerge(force) {
-  if (!sync || (!force && Date.now() - lastPull < 60000)) return;
-  lastPull = Date.now();
-  setStatus("busy", "Syncing…");
-  try {
-    const remote = await pullRemote(), merged = merge(state, remote);
-    const changedLocal = !same(merged, state), changedRemote = !same(merged, remote) || !shaState;
-    state = merged; cfg = state.cfg; saveLocal();
-    if (changedLocal && FILMS.length) { applyTheme(); refresh({keepBar: true}); }
-    if (changedRemote) await pushNow();
-    setStatus("on", `Synced at ${timeNow()}`);
-  } catch (e) { setStatus("err", e.message); }
-}
 
-/* ---------- Boot ---------- */
+/* ---------- Boot ----------
+   The page loads its film data and asks the server who you are at the same time. Signed in, your list comes from your
+   account (cached in this browser for speed); otherwise it lives in this browser. On GitHub Pages or offline there is
+   no server, and the page works as before, browser-only. */
+const timeNow = () => new Date().toLocaleTimeString("en-GB", {hour: "2-digit", minute: "2-digit"});
 async function boot() {
   applyTheme();
   wire();
-  store.del("dread.sync.v1"); // the previous version's per-browser token, no longer used
-  $("syncNote").addEventListener("click", e => {
-    const b = e.target.closest("[data-note]");
-    if (!b) return;
-    if (b.dataset.note === "open") openSettings(vaultInfo.vault ? "uPass" : null);
-    else { try { sessionStorage.setItem("dread.note", "1"); } catch (err) { /* blocked */ } syncNote(); }
-  });
+  store.del("dread.sync.v1"); // the first version's per-browser token, long unused
+  const dataP = fetch("/data.json", {cache: "no-cache"}).then(res => { if (!res.ok) throw new Error(String(res.status)); return res.json(); });
+  const acctP = initAccount();
   try {
-    const res = await fetch("data.json", {cache: "no-cache"});
-    if (!res.ok) throw new Error(String(res.status));
-    prepare(await res.json());
+    prepare(await dataP);
   } catch (e) {
     $("boot").textContent = "The film data didn’t load. Check your connection and refresh the page.";
     return;
   }
+  await acctP;
+  cfg = state.cfg;
+  applyTheme();
   $("boot").remove();
   const when = DATA_CHECKED && !isNaN(DATA_CHECKED) ? DATA_CHECKED.toLocaleString("en-GB", {day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"}) : "unknown";
   $("source").textContent = `UK availability, prices and scores from JustWatch, refreshed every morning (last check ${when}). Subgenres from Wikidata. Gore marked ~ is estimated from the certificate and synopsis. BBC iPlayer needs a TV licence.`;
-  if (!(await acceptPair())) {
-    const c = loadCreds();
-    if (c) { try { await useCreds(c, credsRemembered()); } catch (e) { dropCreds(); } }
-  }
-  setStatus(sync ? "busy" : null, sync ? "Syncing…" : "Ratings are saved in this browser only.");
+  await afterBoot();
   route();
-  if (sync) pullAndMerge(true); else checkVault();
-  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") pullAndMerge(); });
+  startSync();
 }
-boot();
+document.addEventListener("DOMContentLoaded", boot, {once: true});

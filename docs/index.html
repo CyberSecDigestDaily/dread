@@ -3,30 +3,35 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self' https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self' https://api.github.com; manifest-src 'self'; base-uri 'none'; form-action 'self'">
 <meta name="referrer" content="no-referrer">
 <meta name="robots" content="noindex, nofollow">
 <meta name="color-scheme" content="dark light">
 <meta name="theme-color" content="#12110C" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#E9E0AF" media="(prefers-color-scheme: light)">
+<meta name="description" content="A horror recommender for the UK that learns your taste: where every film streams tonight, what's new and what's leaving.">
 <title>Dread List</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%23FF4433'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="style.css">
-<script src="app.js" defer></script>
+<link rel="stylesheet" href="/style.css">
+<script src="/app.js" defer></script>
+<script src="/account.js" defer></script>
+<script src="/together.js" defer></script>
 </head>
 <body>
 <a class="skip" href="#main">Skip to the list</a>
 
 <header class="top">
   <div class="top-in">
-    <a class="brand" href="#for" aria-label="Dread List, for you"><i class="rec" aria-hidden="true"></i><span>Dread List</span></a>
+    <a class="brand" href="/#for" aria-label="Dread List, for you"><i class="rec" aria-hidden="true"></i><span>Dread List</span></a>
     <nav class="tabs" aria-label="Views">
-      <a href="#for" data-view="for">For you</a>
-      <a href="#want" data-view="want">Watchlist <span class="n" id="nWant"></span></a>
-      <a href="#rated" data-view="rated">Rated <span class="n" id="nRated"></span></a>
-      <a href="#taste" data-view="taste">Taste</a>
+      <a href="/#for" data-view="for">For you</a>
+      <a href="/#want" data-view="want">Watchlist <span class="n" id="nWant"></span></a>
+      <a href="/#rated" data-view="rated">Rated <span class="n" id="nRated"></span></a>
+      <a href="/#together" data-view="together">Together</a>
+      <a href="/#taste" data-view="taste">Taste</a>
     </nav>
-    <button type="button" class="gear" id="openSettings" aria-label="Settings and sync">
+    <button type="button" class="who" id="acctBtn" aria-haspopup="dialog">Sign in</button>
+    <button type="button" class="gear" id="openSettings" aria-label="Settings and account">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Zm7.4-2.5a7.6 7.6 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.4 7.4 0 0 0-1.7-1L15 3.3h-4l-.4 2.6a7.4 7.4 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.6 7.6 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1c.5.4 1.1.7 1.7 1l.4 2.6h4l.4-2.6c.6-.3 1.2-.6 1.7-1l2.5 1 2-3.5-2.3-1.6Z"/></svg>
       <span class="dot" id="syncDot" aria-hidden="true"></span>
     </button>
@@ -34,7 +39,7 @@
 </header>
 
 <main id="main">
-  <div class="syncnote" id="syncNote" role="region" aria-label="Sync" hidden></div>
+  <div class="syncnote" id="syncNote" role="region" aria-label="Account" hidden></div>
   <p class="boot" id="boot">Loading the pool…</p>
 
   <section id="view-for" class="view" hidden aria-label="For you">
@@ -55,14 +60,23 @@
     <div class="list" id="listRated"></div>
   </section>
 
+  <section id="view-together" class="view" hidden aria-label="Together">
+    <div id="together"></div>
+  </section>
+
   <section id="view-taste" class="view" hidden aria-label="Taste">
     <div id="taste"></div>
+  </section>
+
+  <section id="view-profile" class="view" hidden aria-label="Profile">
+    <div id="profile"></div>
   </section>
 </main>
 
 <footer class="foot">
   <p class="keys" id="keys"><kbd>j</kbd><kbd>k</kbd> move <kbd>o</kbd> details <kbd>w</kbd> want <kbd>x</kbd> pass <kbd>1</kbd>–<kbd>9</kbd> <kbd>0</kbd> score <kbd>u</kbd> undo <kbd>/</kbd> search <kbd>r</kbd> roll</p>
   <p id="source"></p>
+  <p><a href="/privacy.html">Privacy</a> · No ads, trackers or analytics. Sign-in is passkeys only: no passwords, no email.</p>
 </footer>
 
 <dialog id="settings" aria-labelledby="set-h">
@@ -72,9 +86,9 @@
       <button type="button" class="x" id="closeSettings" aria-label="Close settings">Close</button>
     </div>
 
-    <section class="fs" aria-labelledby="sync-h">
-      <h3 id="sync-h">Sync across devices</h3>
-      <div id="syncBox"></div>
+    <section class="fs" aria-labelledby="acct-h">
+      <h3 id="acct-h">Account</h3>
+      <div id="acctBox"></div>
     </section>
 
     <fieldset>
@@ -105,7 +119,18 @@
         <label class="btn ghost file">Import ratings<input type="file" id="importFile" accept="application/json,.json"></label>
         <button type="button" class="btn ghost danger" id="resetBtn">Clear all ratings</button>
       </div>
+      <div id="dataBox"></div>
     </fieldset>
+  </div>
+</dialog>
+
+<dialog id="authDlg" aria-labelledby="auth-h">
+  <div class="dlg">
+    <div class="dlg-head">
+      <h2 id="auth-h">Your list, everywhere</h2>
+      <button type="button" class="x" id="closeAuth" aria-label="Close">Close</button>
+    </div>
+    <div id="authBox"></div>
   </div>
 </dialog>
 
