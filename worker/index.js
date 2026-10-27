@@ -2,7 +2,7 @@
    profiles. Data lives in D1 (EU jurisdiction). No third-party services, keys or secrets. */
 
 import {HttpError} from "./util.js";
-import {withHeaders, json, errorResponse, checkOrigin} from "./http.js";
+import {withHeaders, json, errorResponse, checkOrigin, allowedOrigins} from "./http.js";
 import {ensureSchema, cleanup} from "./db.js";
 import * as auth from "./auth.js";
 import {getState, postState} from "./sync.js";
@@ -77,6 +77,12 @@ async function api(request, env, ctx, url) {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    // One canonical address: www (and any other alias of the domain) redirects to it, so passkeys, the session cookie
+    // and browser storage all live on a single origin.
+    const canonical = new URL(allowedOrigins(env)[0] || url.origin);
+    if (url.hostname !== canonical.hostname && url.hostname.endsWith("." + canonical.hostname)) {
+      return withHeaders(Response.redirect(canonical.origin + url.pathname + url.search, 301), "api");
+    }
     if (url.pathname.startsWith("/api/")) {
       let res;
       try { res = await api(request, env, ctx, url); } catch (e) { res = errorResponse(e); }
@@ -87,7 +93,8 @@ export default {
       const res = await env.ASSETS.fetch(new Request(new URL("/", url), {method: "GET", headers: request.headers}));
       return withHeaders(res, "page");
     }
-    return env.ASSETS.fetch(request);
+    const res = await env.ASSETS.fetch(request);
+    return (res.headers.get("Content-Type") || "").startsWith("text/html") ? withHeaders(res, "page") : res;
   },
 
   async scheduled(event, env, ctx) {

@@ -454,7 +454,7 @@ function renderAuth() {
           <p class="ways"><button type="button" class="linkish" data-auth="mode-link">Use a code from a signed-in device</button><br><button type="button" class="linkish" data-auth="mode-recover">Use a recovery code</button></p>
         </div>
       </div>
-      <p class="hint small">The server keeps your name, your passkeys’ public keys and your list. No email, no password, no tracking. <a href="/privacy.html" target="_blank" rel="noopener">Privacy</a></p>`;
+      <p class="hint small">The server keeps your name, your passkeys’ public keys and your list. No email, no password, no tracking. <a href="/privacy" target="_blank" rel="noopener">Privacy</a></p>`;
   } else if (v.mode === "recover") {
     h2.textContent = "Use a recovery code";
     html = `<form id="fRecover" class="authcol" novalidate>

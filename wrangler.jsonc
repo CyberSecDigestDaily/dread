@@ -10,7 +10,9 @@
   "assets": {
     "directory": "./docs",
     "binding": "ASSETS",
-    "run_worker_first": ["/api/*", "/u/*"]
+    // The API and profile pages, plus page documents so www.dreadlist.co.uk can be redirected to the bare domain.
+    // Everything else (scripts, styles, data, posters, fonts) is served straight from the edge without the Worker.
+    "run_worker_first": ["/api/*", "/u/*", "/", "/privacy"]
   },
   "d1_databases": [
     {"binding": "DB", "database_name": "dread", "database_id": "229d59c1-21e5-4eb9-b299-0aa7e0512b7c"}

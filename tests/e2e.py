@@ -219,7 +219,7 @@ async def main():
         await m["page"].click("#acctBtn")
         await m["page"].wait_for_selector("#authDlg[open]")
         await shot(m, "12-mobile-auth")
-        await m["page"].goto(BASE + "/privacy.html")
+        await m["page"].goto(BASE + "/privacy")
         await shot(m, "13-privacy", full=True)
 
         print("\nConsole")
