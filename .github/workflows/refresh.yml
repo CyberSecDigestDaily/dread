@@ -73,6 +73,7 @@ jobs:
           mkdir -p "$site/fonts"
           cp "$RUNNER_TEMP"/fonts/*.woff2 "$site/fonts/" 2>/dev/null || true
           touch "$site/.nojekyll"
+          echo "dreadlist.co.uk" > "$site/CNAME"   # keep the custom domain: a force-push without it drops dreadlist.co.uk
           echo "$(ls "$site/p" 2>/dev/null | wc -l) posters published"
           cd "$site"
           git init -q -b gh-pages
