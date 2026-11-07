@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self' https://api.github.com; manifest-src 'self'; base-uri 'none'; form-action 'self'">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#12110C" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#E9E0AF" media="(prefers-color-scheme: light)">
+<meta name="description" content="A horror recommender for the UK that learns your taste: where every film streams tonight, what's new and what's leaving.">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Dread List">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Dread List</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%23FF4433'/%3E%3C/svg%3E">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="stylesheet" href="/style.css">
+<script src="/app.js" defer></script>
+<script src="/account.js" defer></script>
+<script src="/together.js" defer></script>
+<script src="/find.js" defer></script>
+<script src="/extras.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to the list</a>
+
+<header class="top">
+  <div class="top-in">
+    <a class="brand" href="/#for" aria-label="Dread List, for you"><i class="rec" aria-hidden="true"></i><span>Dread List</span></a>
+    <nav class="tabs" aria-label="Views">
+      <a href="/#for" data-view="for"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/></svg><span>For you</span></a>
+      <a href="/#want" data-view="want"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 3.5h11v17L12 16.5l-5.5 4Z"/></svg><span>Watchlist</span> <span class="n" id="nWant"></span></a>
+      <a href="/#rated" data-view="rated"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V14M9 20V9M14 20v-8M19 20V4"/></svg><span>Rated</span> <span class="n" id="nRated"></span></a>
+      <a href="/#together" data-view="together"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8.5" cy="8.5" r="3"/><circle cx="16.5" cy="9.5" r="2.5"/><path d="M2.5 19.5c.6-3.3 3-5 6-5s5.4 1.7 6 5M14.5 14.6c.6-.2 1.3-.3 2-.3 2.6 0 4.5 1.5 5 4.2"/></svg><span>Together</span></a>
+      <a href="/#taste" data-view="taste"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12.5h4l2.5-6 4 12 3-8 1.5 2h4"/></svg><span>Taste</span></a>
+    </nav>
+    <button type="button" class="who" id="acctBtn" aria-haspopup="dialog">Sign in</button>
+    <button type="button" class="gear" id="openSettings" aria-label="Settings and account" aria-haspopup="dialog">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Zm7.4-2.5a7.6 7.6 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.4 7.4 0 0 0-1.7-1L15 3.3h-4l-.4 2.6a7.4 7.4 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.6 7.6 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1c.5.4 1.1.7 1.7 1l.4 2.6h4l.4-2.6c.6-.3 1.2-.6 1.7-1l2.5 1 2-3.5-2.3-1.6Z"/></svg>
+      <span class="dot" id="syncDot" aria-hidden="true"></span>
+    </button>
+  </div>
+</header>
+
+<main id="main">
+  <div class="syncnote" id="syncNote" role="region" aria-label="Account" hidden></div>
+  <p class="boot" id="boot">Loading the pool…</p>
+
+  <section id="view-welcome" class="view" hidden aria-label="Welcome">
+    <div id="welcome"></div>
+  </section>
+
+  <section id="view-for" class="view" hidden aria-label="For you">
+    <div class="bar" id="barFor"></div>
+    <div class="tonight" id="tonight"></div>
+    <div class="strips" id="strips"></div>
+    <div id="forHead"></div>
+    <div class="list" id="listFor"></div>
+    <button type="button" class="more" id="moreFor" hidden>Show 40 more</button>
+  </section>
+
+  <section id="view-want" class="view" hidden aria-label="Watchlist">
+    <div class="bar" id="barWant"></div>
+    <div class="list" id="listWant"></div>
+  </section>
+
+  <section id="view-rated" class="view" hidden aria-label="Rated">
+    <div class="rated-head" id="ratedHead"></div>
+    <div class="list" id="listRated"></div>
+  </section>
+
+  <section id="view-together" class="view" hidden aria-label="Together">
+    <div id="together"></div>
+  </section>
+
+  <section id="view-taste" class="view" hidden aria-label="Taste">
+    <div id="taste"></div>
+  </section>
+
+  <section id="view-profile" class="view" hidden aria-label="Profile">
+    <div id="profile"></div>
+  </section>
+</main>
+
+<footer class="foot">
+  <p class="keys" id="keys"><kbd>j</kbd><kbd>k</kbd> move <kbd>o</kbd> details <kbd>w</kbd> want <kbd>x</kbd> pass <kbd>1</kbd>–<kbd>9</kbd> <kbd>0</kbd> score <kbd>u</kbd> undo <kbd>/</kbd> search <kbd>r</kbd> another tonight</p>
+  <p id="source"></p>
+  <p><a href="/about">About</a> · <a href="/privacy">Privacy</a> · No ads, trackers or analytics. Sign-in is passkeys only: no passwords, no email.</p>
+  <p class="tmdb">Film search uses the TMDB API but is not endorsed or certified by TMDB.</p>
+</footer>
+
+<dialog id="filmDlg" class="sheet fsheet" aria-labelledby="fd-h">
+  <div class="sheet-in">
+    <div class="sheet-bar"><span class="grab" aria-hidden="true"></span><button type="button" class="x" id="closeFilm">Close</button></div>
+    <div class="sheet-body" id="fdBody"></div>
+  </div>
+</dialog>
+
+<dialog id="sheet" class="sheet small" aria-labelledby="sheet-h">
+  <div class="sheet-in">
+    <div class="sheet-bar"><h2 id="sheet-h">Where to watch</h2><button type="button" class="x" data-close>Done</button></div>
+    <div class="sheet-body" id="sheetBody"></div>
+  </div>
+</dialog>
+
+<dialog id="settings" class="sheet set-dlg" aria-labelledby="set-h">
+  <div class="sheet-in">
+    <div class="sheet-bar set-bar">
+      <button type="button" class="set-back" id="setBack" hidden><span aria-hidden="true">‹</span> Settings</button>
+      <h2 id="set-h">Settings</h2>
+      <button type="button" class="x" id="closeSettings">Done</button>
+    </div>
+    <div class="set-body">
+      <nav class="set-nav" aria-label="Settings sections">
+        <button type="button" data-pane="account"><span>Account</span><small></small></button>
+        <button type="button" data-pane="services"><span>Streaming services</span><small></small></button>
+        <button type="button" data-pane="content"><span>Content</span><small></small></button>
+        <button type="button" data-pane="look"><span>Appearance</span><small></small></button>
+        <button type="button" data-pane="data"><span>Your data</span><small>Export, import, clear</small></button>
+        <button type="button" data-pane="about"><span>About</span><small>How it works, privacy</small></button>
+      </nav>
+      <div class="set-panes">
+        <section class="set-pane" data-pane="account" hidden aria-labelledby="sp-account">
+          <h3 id="sp-account">Account</h3>
+          <div id="acctBox"></div>
+        </section>
+
+        <section class="set-pane" data-pane="services" hidden aria-labelledby="sp-services">
+          <h3 id="sp-services">Streaming services</h3>
+          <p class="hint">Films on these count as <b>watch tonight</b>. HBO Max comes with NOW Entertainment since March 2026; newer Sky Cinema films need NOW Cinema.</p>
+          <div class="group" id="svcChecks"></div>
+          <div class="group">
+            <label class="sw"><span>Count free TV as watch tonight<small>BBC iPlayer, Channel 4, ITVX, My5, Tubi, Plex, Pluto TV, Amazon MX Player and YouTube</small></span><input type="checkbox" class="tog" id="cfgFree"></label>
+          </div>
+        </section>
+
+        <section class="set-pane" data-pane="content" hidden aria-labelledby="sp-content">
+          <h3 id="sp-content">Content</h3>
+          <p class="hint">Hide films flagged for:</p>
+          <div class="group" id="flagChecks"></div>
+          <div class="group">
+            <label class="sw"><span>English-language films only<small>Hides subtitled films everywhere. Also under Language above the list.</small></span><input type="checkbox" class="tog" id="cfgEn"></label>
+          </div>
+        </section>
+
+        <section class="set-pane" data-pane="look" hidden aria-labelledby="sp-look">
+          <h3 id="sp-look">Appearance</h3>
+          <div class="seg wide" id="themeSeg" role="group" aria-label="Theme">
+            <button type="button" data-theme-set="auto">Match device</button>
+            <button type="button" data-theme-set="dark">Dark</button>
+            <button type="button" data-theme-set="light">Light</button>
+          </div>
+        </section>
+
+        <section class="set-pane" data-pane="data" hidden aria-labelledby="sp-data">
+          <h3 id="sp-data">Your data</h3>
+          <p class="hint">Your ratings, watchlist, passes and settings as a file, to keep or to bring into another browser.</p>
+          <div class="btns left">
+            <button type="button" class="btn ghost" id="exportBtn">Export ratings</button>
+            <label class="btn ghost file">Import ratings<input type="file" id="importFile" accept="application/json,.json"></label>
+          </div>
+          <div id="dataBox"></div>
+          <div class="group danger-zone">
+            <p class="hint">Start again from nothing. Export first if you might want them back.</p>
+            <div class="btns left"><button type="button" class="btn ghost danger" id="resetBtn">Clear all ratings</button></div>
+          </div>
+        </section>
+
+        <section class="set-pane" data-pane="about" hidden aria-labelledby="sp-about">
+          <h3 id="sp-about">About</h3>
+          <p>The Dread List is a horror recommender for the UK. It learns your taste from what you rate, want and pass, and tells you where each film streams tonight.</p>
+          <ul class="plain">
+            <li><a href="/about">How it works</a></li>
+            <li><a href="/privacy">Privacy</a></li>
+            <li><button type="button" class="linkish" data-act="onboard">Show the getting-started guide again</button></li>
+          </ul>
+          <p class="hint">Availability, prices and scores from JustWatch; subgenres from Wikidata; film search from TMDB (this product uses the TMDB API but is not endorsed or certified by TMDB).</p>
+          <p class="keys"><kbd>j</kbd><kbd>k</kbd> move <kbd>o</kbd> details <kbd>w</kbd> want <kbd>x</kbd> pass <kbd>1</kbd>–<kbd>9</kbd> <kbd>0</kbd> score <kbd>u</kbd> undo <kbd>/</kbd> search</p>
+        </section>
+      </div>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="authDlg" class="sheet small auth" aria-labelledby="auth-h">
+  <div class="sheet-in">
+    <div class="sheet-bar"><h2 id="auth-h">Your list, everywhere</h2><button type="button" class="x" id="closeAuth">Close</button></div>
+    <div class="sheet-body" id="authBox"></div>
+  </div>
+</dialog>
+
+<dialog id="findDlg" class="sheet small" aria-labelledby="find-h">
+  <div class="sheet-in">
+    <div class="sheet-bar"><h2 id="find-h">Add a film</h2><button type="button" class="x" data-close>Close</button></div>
+    <div class="sheet-body" id="findBox"></div>
+  </div>
+</dialog>
+
+<dialog id="xDlg" class="sheet small" aria-labelledby="x-h">
+  <div class="sheet-in">
+    <div class="sheet-bar"><h2 id="x-h"></h2><button type="button" class="x" data-close>Close</button></div>
+    <div class="sheet-body" id="xBox"></div>
+  </div>
+</dialog>
+
+<div class="toast" id="toast" role="status" aria-live="polite" popover="manual" hidden><span id="toastText"></span><button type="button" id="toastUndo">Undo</button></div>
+</body>
+</html>

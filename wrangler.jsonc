@@ -1,0 +1,29 @@
+// Cloudflare Worker for dreadlist.co.uk: static page from docs/, API from worker/, data in D1.
+// Deployed by Workers Builds from the `deploy` branch, which the refresh workflow rebuilds (with fonts and posters)
+// on every publish. Local dev: npx wrangler dev --var ORIGIN:http://localhost:8787 --var RP_ID:localhost
+{
+  "name": "dread",
+  "main": "worker/index.js",
+  "compatibility_date": "2026-10-01",
+  // Only reachable at dreadlist.co.uk (custom domains for it and www are set on the Worker in the dashboard).
+  "workers_dev": false,
+  "preview_urls": false,
+  "assets": {
+    "directory": "./docs",
+    "binding": "ASSETS",
+    // The API and profile pages, plus page documents so www.dreadlist.co.uk can be redirected to the bare domain.
+    // Everything else (scripts, styles, data, posters, fonts) is served straight from the edge without the Worker.
+    "run_worker_first": ["/api/*", "/u/*", "/", "/privacy", "/about"]
+  },
+  "d1_databases": [
+    {"binding": "DB", "database_name": "dread", "database_id": "229d59c1-21e5-4eb9-b299-0aa7e0512b7c"}
+  ],
+  // Secrets (set in the Cloudflare dashboard, never here): TMDB_KEY, a TMDB API read access token, switches on film search.
+  "vars": {
+    // Comma-separated origins allowed to make changes; the first is canonical. RP_ID is the passkey domain.
+    "ORIGIN": "https://dreadlist.co.uk",
+    "RP_ID": "dreadlist.co.uk"
+  },
+  "triggers": {"crons": ["41 3 * * *"]},
+  "observability": {"enabled": true, "logs": {"invocation_logs": false}}
+}
