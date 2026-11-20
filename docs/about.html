@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark light">
+<meta name="description" content="What the Dread List is, how its recommendations work, and where its film data comes from.">
+<title>About · Dread List</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%23FF4433'/%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="page">
+<header class="top"><div class="top-in"><a class="brand" href="/#for"><i class="rec" aria-hidden="true"></i><span>Dread List</span></a></div></header>
+<main class="prose">
+  <h1>About</h1>
+  <p class="sub">A horror recommender for the UK. Personal, non-commercial, no ads.</p>
+
+  <h2>What it does</h2>
+  <p>The Dread List keeps about 1,300 horror films and tells you where each one streams in the UK tonight: on the services you pay for, on free TV, to rent, or not at all. It learns your taste from what you rate, want and pass, ranks everything for you, and explains why each film is where it is.</p>
+
+  <h2>How to use it</h2>
+  <ul>
+    <li><b>For you</b> ranks every film you haven’t seen. The big number down the left is the match: how well a film fits your taste, out of 100.</li>
+    <li><b>Want</b>, <b>Pass</b> and <b>Seen it</b> (with a score out of ten) each teach it something. Tap any film for the synopsis, where to watch it, similar films and the sums behind its match.</li>
+    <li><b>Watch tonight</b> is your best unseen match on the services you pay for, or free TV. Set your services in Settings.</li>
+    <li><b>Watchlist</b> groups what you want by where you can watch it. <b>Rated</b> is everything you’ve scored. <b>Taste</b> shows what the model has learned, and which single subscription would unlock the most of your watchlist this month.</li>
+    <li><b>Together</b> makes shared lists with your partner or friends, ranked for everyone on them. Send the invite link; anyone using the Dread List as a Home Screen app can paste it into Together.</li>
+    <li>Can’t find a film? Search for it, then choose <b>Search every film</b> to add it from TMDB. It joins your list straight away and everyone’s pool the next morning.</li>
+  </ul>
+
+  <h2>How the recommendations work</h2>
+  <p>Every film is a bag of features: subgenre tags (hand-picked, from Wikidata and from the synopsis), director, decade, where it’s from, whether it’s subtitled, gore level and length. Every button you press is a signal. A score runs from −2.5 for a 1 (Hated) to +2.5 for a 10 (Favourite); Want is +0.6 and Pass −1. Your affinity for a feature is the average signal across the films that have it, pulled toward zero until there’s enough evidence.</p>
+  <p>A film’s match adds up its feature affinities, a boost when JustWatch lists it as similar to something you rated, and a small nudge from IMDb and Rotten Tomatoes. Every seventh slot is a wildcard: a well-reviewed film built from features you haven’t rated yet, so the model keeps learning instead of narrowing. It all runs in your browser.</p>
+
+  <h2>On your phone</h2>
+  <p>In Safari, tap Share, then <b>Add to Home Screen</b>; on Android, choose <b>Install app</b> or <b>Add to Home screen</b> from the browser menu. The Dread List then opens like an app. A Home Screen app keeps its own sign-in, separate from the browser’s: sign in there once with the same passkey.</p>
+
+  <h2>Accounts</h2>
+  <p>You don’t need one: your list is kept in your browser. An account keeps it on every device, and lets you make shared lists and a public page. Sign-in is a passkey (Face ID, Touch ID, Windows Hello or a security key): no email, no password. See <a href="/privacy">Privacy</a> for exactly what’s kept.</p>
+
+  <h2>Where the film data comes from</h2>
+  <ul>
+    <li><b>JustWatch</b>: UK availability, deep links, leaving dates, prices, IMDb and Rotten Tomatoes scores, and posters. Refreshed every morning.</li>
+    <li><b>Wikidata</b>: subgenres and original languages.</li>
+    <li><b>TMDB</b>: search, and the details of films people add. This product uses the TMDB API but is not endorsed or certified by TMDB.</li>
+    <li>About a hundred films are hand-picked, with a one-line pitch, and a few more are researched and added every Sunday.</li>
+  </ul>
+
+  <h2>Found a problem?</h2>
+  <p>Security issues: please report them privately through <a href="https://github.com/CyberSecDigestDaily/dread/security/advisories/new">GitHub’s private vulnerability reporting</a>. The code is at <a href="https://github.com/CyberSecDigestDaily/dread">github.com/CyberSecDigestDaily/dread</a>.</p>
+
+  <p><a href="/#for">Back to the Dread List</a></p>
+</main>
+</body>
+</html>

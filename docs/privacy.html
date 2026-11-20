@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark light">
+<title>Privacy · Dread List</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%23FF4433'/%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="page">
+<header class="top"><div class="top-in"><a class="brand" href="/#for"><i class="rec" aria-hidden="true"></i><span>Dread List</span></a></div></header>
+<main class="prose">
+  <h1>Privacy</h1>
+  <p class="sub">Last updated 27 October 2026. The Dread List is a personal, non-commercial project.</p>
+
+  <h2>Without an account</h2>
+  <p>Your ratings, watchlist, passes and settings stay in your browser’s storage. Nothing about you is sent to the server. A Home Screen app keeps its own storage, separate from the browser’s.</p>
+
+  <h2>With an account</h2>
+  <p>The server keeps only what it needs:</p>
+  <ul>
+    <li><b>The name you pick.</b> No email, no real name, no phone number, no password.</li>
+    <li><b>Your passkeys’ public keys</b>, with the name you give each, when it was added and last used, and whether it syncs. The private half never leaves your device.</li>
+    <li><b>Your list:</b> ratings, watchlist, passes and settings, with a compact copy of each film’s details so your list still makes sense after a film leaves the daily pool.</li>
+    <li><b>Sessions:</b> one per signed-in browser, with a coarse label such as “Firefox on Windows” and when it was last used. The cookie holds a random token; the server stores only a hash of it. Sessions end after 30 days without use, and after 180 days at most.</li>
+    <li><b>Recovery codes</b>, as hashes only.</li>
+    <li><b>Abuse protection:</b> sign-in attempts are counted against a keyed hash of your IP address, which is never stored in the clear and is discarded after at most a day.</li>
+  </ul>
+  <p>It’s all held in a Cloudflare D1 database restricted to the EU. Cloudflare also runs the site and processes requests on our behalf.</p>
+
+  <h2>What other people can see</h2>
+  <ul>
+    <li><b>Nothing</b>, unless you choose to share.</li>
+    <li><b>Public page</b> (off by default): your name, ratings and watchlist at dreadlist.co.uk/u/your-name. Never your passes or any dates.</li>
+    <li><b>Shared lists:</b> when you join one, its other members can see your ratings, watchlist, passes and the content flags you hide, so the list can rank films for everyone. Leave and that stops.</li>
+    <li><b>Help grow the pool</b> (off by default): the nightly rebuild receives the ids of films you loved, liked, wanted or passed, pooled with everyone else who opted in, with no names, scores or dates.</li>
+    <li><b>Films you add</b> from search join the pool for everyone. The server counts how many times each film was added, never who added it.</li>
+  </ul>
+
+  <h2>Film search</h2>
+  <p>When you search every film, your search goes from your browser to this site, which asks TMDB and passes the answer back. TMDB sees the words you searched for, but not your IP address, browser or account. Posters for added films come through this site in the same way. Searches aren’t stored.</p>
+
+  <h2>Cookies and tracking</h2>
+  <p>One cookie, set only when you sign in, to keep you signed in. It’s strictly necessary, so there’s no banner. No analytics, ads, trackers, third-party scripts or fonts. Posters and fonts are served from this site.</p>
+
+  <h2>Your control</h2>
+  <ul>
+    <li>Download everything in your account, or delete it all for good, from Settings.</li>
+    <li>Sign out any device, rename or remove passkeys, and make new recovery codes from Settings.</li>
+  </ul>
+
+  <h2>Film data</h2>
+  <p>Availability, prices and scores come from JustWatch; subgenres and languages from Wikidata; search and details of added films from TMDB (this product uses the TMDB API but is not endorsed or certified by TMDB). Links to streaming services, IMDb, Letterboxd, TMDB and YouTube take you to those sites, which have their own privacy policies.</p>
+
+  <p><a href="/#for">Back to the Dread List</a></p>
+</main>
+</body>
+</html>
