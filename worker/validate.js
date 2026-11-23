@@ -31,7 +31,7 @@ const TAG = s => /^[a-z][a-z-]{0,23}$/.test(s);
 
 /* Services a film added from TMDB is on: known keys, or a named channel or free service. No links: the page builds
    those from known hosts. */
-const SVC_KEY = /^(nf|pv|dp|cr|hbo|nowe|nowc|sh|pp|mubi|atv|bfi|tubi|c4|bbc|itvx|pluto|plex|ytf|rakuten|mx|my5)$/;
+const SVC_KEY = /^(nf|pv|dp|cr|hbo|hbos|nowe|nowc|sh|pp|mubi|atv|bfi|tubi|c4|bbc|itvx|pluto|plex|ytf|rakuten|mx|my5)$/;
 const NAMED_SVC = /^(ch|free):[^\u0000-\u001f<>"&]{1,60}$/;
 const offerList = v => Array.isArray(v) ? v.filter(o => Array.isArray(o) && typeof o[0] === "string" && (SVC_KEY.test(o[0]) || NAMED_SVC.test(o[0])))
   .slice(0, 12).map(o => [o[0], "", null]) : undefined;
@@ -79,7 +79,9 @@ export function cleanEntry(e, serverNowMs) {
   return out;
 }
 
-const SVC_KEYS = ["nf", "pv", "dp", "hbo", "nowe", "cr", "nowc", "sh", "pp", "mubi", "atv", "bfi"];
+/* hbo is HBO Max's Basic with Ads plan (what NOW Entertainment & HBO Max and Sky include); hbos is Standard with Ads or
+   above, which adds the newest films. */
+const SVC_KEYS = ["nf", "pv", "dp", "hbo", "hbos", "nowe", "cr", "nowc", "sh", "pp", "mubi", "atv", "bfi"];
 const FLAG_KEYS = ["spiders", "snakes", "animal-harm", "child-harm", "sexual-violence", "self-injury"];
 export function cleanCfg(c) {
   if (!c || typeof c !== "object" || Array.isArray(c)) return null;

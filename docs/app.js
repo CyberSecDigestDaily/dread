@@ -8,7 +8,11 @@
 /* ---------- Config ---------- */
 const SVC = {
   nf: {n: "Netflix"}, pv: {n: "Prime Video"}, dp: {n: "Disney+"}, cr: {n: "Crunchyroll"},
-  hbo: {n: "HBO Max", p: 4.99, note: "comes with NOW Entertainment"}, nowe: {n: "NOW Entertainment", p: 9.99},
+  /* HBO Max's Basic with Ads plan (what NOW Entertainment & HBO Max and Sky include) leaves out the newest films, the
+     ones that first stream after their cinema run. The pool files those under hbos: Standard with Ads or above. */
+  hbo: {n: "HBO Max", p: 4.99, note: "Basic with Ads, or included with NOW Entertainment & HBO Max and Sky"},
+  hbos: {n: "HBO Max Standard", p: 5.99, note: "Standard with Ads, or a £1 upgrade on the Basic with Ads plan NOW and Sky include"},
+  nowe: {n: "NOW Entertainment", p: 9.99},
   nowc: {n: "NOW Cinema", p: 9.99, note: "£6.99 on a 12-month saver"},
   sh: {n: "Shudder", p: 4.99, note: "7-day free trial, or add it as a Prime Video channel"},
   pp: {n: "Paramount+", p: 5.99, note: "Basic with ads"}, mubi: {n: "MUBI", p: 11.99, note: "7-day free trial"},
@@ -17,7 +21,7 @@ const SVC = {
   pluto: {n: "Pluto TV", free: 1}, plex: {n: "Plex", free: 1}, ytf: {n: "YouTube", free: 1}, rakuten: {n: "Rakuten TV", free: 1},
   mx: {n: "Amazon MX Player", free: 1}, my5: {n: "My5", free: 1}
 };
-const OWNABLE = ["nf", "pv", "dp", "hbo", "nowe", "cr", "nowc", "sh", "pp", "mubi", "atv", "bfi"];
+const OWNABLE = ["nf", "pv", "dp", "hbo", "hbos", "nowe", "cr", "nowc", "sh", "pp", "mubi", "atv", "bfi"];
 const FREE_ORDER = ["bbc", "c4", "itvx", "my5", "tubi", "mx", "plex", "pluto", "ytf", "rakuten"];
 const DEFAULT_CFG = {svc: {nf: 1, pv: 1, dp: 1, hbo: 1, nowe: 1, cr: 1}, free: 1, hide: {}, theme: "auto", share: 0, en: 0, t: ""};
 const TAGS = {"found-footage": "Found footage", liminal: "Liminal", claustrophobic: "Claustrophobic", isolation: "Isolation",
@@ -71,6 +75,32 @@ const store = {
 };
 const svcName = k => SVC[k] ? SVC[k].n : k.startsWith("ch:") ? k.slice(3) : k.startsWith("free:") ? k.slice(5) : k;
 const isFree = k => !!(SVC[k] && SVC[k].free) || k.startsWith("free:");
+/* Whether you pay for a service. HBO Max Standard and above include everything in Basic with Ads. */
+const owns = k => !!cfg.svc[k] || (k === "hbo" && !!cfg.svc.hbos);
+/* What a watch button calls a service you have: to its subscribers, HBO Max Standard is just HBO Max. */
+const ownName = k => k === "hbos" && owns(k) ? SVC.hbo.n : svcName(k);
+/* Switching a service on or off. HBO Max Standard brings Basic's films with it; no HBO Max means neither. */
+function svcPatch(k, on) {
+  const svc = Object.assign({}, cfg.svc, {[k]: on ? 1 : 0});
+  if (k === "hbos" && on) svc.hbo = 1;
+  if (k === "hbo" && !on) svc.hbos = 0;
+  return {svc};
+}
+/* A service's price for someone who doesn't have it yet. People who get HBO Max Basic with Ads through NOW or Sky
+   can add the newest films with HBO Max's £1 Standard with Ads upgrade. */
+function svcCost(k) {
+  if (k === "hbos" && owns("hbo")) return {p: 1, note: "the Standard with Ads upgrade, bought in the HBO Max app"};
+  const s = SVC[k] || {};
+  return {p: s.p, note: s.note};
+}
+/* A service's label in Settings and the getting-started guide. */
+function svcLabelHTML(k, withPrice) {
+  const s = SVC[k];
+  const small = k === "hbo" ? "Basic with Ads: comes with NOW Entertainment & HBO Max, and with Sky"
+    : k === "hbos" ? "Standard with Ads or above, or the £1 upgrade: adds the newest films, straight after their cinema run"
+    : withPrice && s.p ? `£${s.p.toFixed(2)} a month` : "";
+  return `${esc(s.n)}${small ? ` <small>${esc(small)}</small>` : ""}`;
+}
 /* Case- and accent-insensitive text for search: "Fréwaka" matches "frewaka". */
 const fold = s => String(s == null ? "" : s).normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase();
 const foldKey = s => fold(s).replace(/[^\p{L}\p{N}]+/gu, " ").trim();
@@ -130,6 +160,7 @@ function normState(s) {
     out.cfg = {svc: Object.assign({}, s.cfg.svc || c.svc), free: s.cfg.free === 0 ? 0 : 1, hide: Object.assign({}, s.cfg.hide || {}),
       theme: ["auto", "dark", "light"].includes(s.cfg.theme) ? s.cfg.theme : "auto", share: s.cfg.share === 1 ? 1 : 0,
       en: s.cfg.en === 1 ? 1 : 0, t: String(s.cfg.t || "")};
+    if (out.cfg.svc.hbos) out.cfg.svc.hbo = 1;
   }
   return out;
 }
@@ -370,7 +401,7 @@ function reasons(f) {
 function avail(f) {
   const own = [], free = [], other = [];
   for (const o of f.o || []) {
-    if (cfg.svc[o[0]]) own.push(o);
+    if (owns(o[0])) own.push(o);
     else if (isFree(o[0])) (cfg.free ? free : other).push(o);
     else other.push(o);
   }
@@ -387,7 +418,7 @@ const safePath = p => typeof p === "string" && /^\/[a-z]{2}\/[a-z0-9-]+(\/[a-z0-
 const jwLink = f => safePath(f.jw) ? "https://www.justwatch.com" + f.jw : "https://www.justwatch.com/uk/search?q=" + encodeURIComponent(f.t);
 /* The services you pay for, in words: "Netflix, Prime Video and 3 more, or free". */
 function servicesPhrase() {
-  const own = OWNABLE.filter(k => cfg.svc[k]), both = own.includes("hbo") && own.includes("nowe");
+  const own = OWNABLE.filter(k => owns(k) && k !== "hbos"), both = own.includes("hbo") && own.includes("nowe");
   const names = own.filter(k => !(both && k === "hbo")).map(k => both && k === "nowe" ? "NOW" : SVC[k].n);
   const list = names.length > 3 ? `${names.slice(0, 3).join(", ")} and ${names.length - 3} more` : andList(names);
   if (!names.length) return cfg.free ? "free TV" : "";
@@ -526,10 +557,10 @@ function watchHTML(f, a) {
   if (ui.svc.size) {
     const keys = [...ui.svc].flatMap(t => t.split("|"));
     const o = (f.o || []).find(o => keys.includes(o[0]) || (keys.includes("free") && isFree(o[0])));
-    if (o) return cfg.svc[o[0]] ? offerA(f, o, "mine", `Watch on ${esc(svcName(o[0]))}`)
+    if (o) return owns(o[0]) ? offerA(f, o, "mine", `Watch on ${esc(ownName(o[0]))}`)
       : isFree(o[0]) ? offerA(f, o, "free", `Free on ${esc(svcName(o[0]))}`) : offerA(f, o, "other", `On ${esc(svcName(o[0]))}`);
   }
-  if (a.own.length) return offerA(f, a.own[0], "mine", `Watch on ${esc(svcName(a.own[0][0]))}`);
+  if (a.own.length) return offerA(f, a.own[0], "mine", `Watch on ${esc(ownName(a.own[0][0]))}`);
   if (a.free.length) return offerA(f, a.free[0], "free", `Free on ${esc(svcName(a.free[0][0]))}`);
   const sub = a.other.find(o => !isFree(o[0]));
   if (f.rent) {
@@ -556,6 +587,9 @@ function dirHTML(f) {
   const ds = (f.dir || []).slice(0, 2);
   return ds.length ? `<span class="by">${ds.map(d => `<button type="button" class="dirlink" data-act="dir" data-key="${esc(d)}" aria-pressed="${ui.dir === d}" title="${ui.dir === d ? "Show every director" : "Only films by " + esc(d)}">${esc(d)}</button>`).join(" &amp; ")}</span>` : "";
 }
+/* Newly added, in the last fortnight, to a service you pay for (or a free one), and still there. */
+const isNewForYou = f => !!f.nw && daysUntil(f.nw[0]) >= -NEW_DAYS && (owns(f.nw[1]) || (cfg.free && isFree(f.nw[1]))) &&
+  (f.o || []).some(o => o[0] === f.nw[1]);
 function badgesHTML(f, a) {
   const b = [], e = eff(f.id);
   if (ui.view === "profile" && typeof theirBadge === "function") b.push(theirBadge(f));
@@ -563,7 +597,7 @@ function badgesHTML(f, a) {
   if (f.p && !isDone(e)) b.push(`<span class="badge pick">Start here</span>`);
   if (ui.wild.has(f.id)) b.push(`<span class="badge wild" title="Picked to test something the model hasn't learned yet">Wildcard</span>`);
   if (f.added) b.push(`<span class="badge" title="Added from TMDB. Full UK availability arrives with tomorrow morning's refresh.">Added</span>`);
-  if (f.nw && daysUntil(f.nw[0]) >= -NEW_DAYS && (cfg.svc[f.nw[1]] || (cfg.free && isFree(f.nw[1])))) b.push(`<span class="badge new">New on ${esc(svcName(f.nw[1]))}</span>`);
+  if (isNewForYou(f)) b.push(`<span class="badge new">New on ${esc(ownName(f.nw[1]))}</span>`);
   if (a.leave && daysUntil(a.leave) <= SOON_DAYS) b.push(`<span class="badge leave">Leaves ${esc(shortDate(a.leave))}</span>`);
   if (f.cin && !a.tonight) b.push(`<span class="badge">In cinemas</span>`);
   return b.join("");
@@ -619,13 +653,21 @@ function rowHTML(f, opts) {
 }
 
 /* ---------- The details sheet ---------- */
+/* Why a film on HBO Max isn't counted as yours: one of the newest films, which Basic with Ads leaves out. */
+function newestNoteHTML(f, a) {
+  if (owns("hbos") || a.own.length || !(f.o || []).some(o => o[0] === "hbos")) return "";
+  return `<p class="hint offers-note">Fresh from cinemas, so it isn’t in HBO Max Basic with Ads, the plan NOW and Sky include. ` +
+    (owns("hbo") ? `HBO Max’s Standard with Ads upgrade adds films like this for £1 a month: in the HBO Max app, your profile, then Subscription.`
+      : `It needs HBO Max Standard with Ads (£5.99 a month) or above.`) +
+    ((f.o || []).some(o => o[0] === "nowc") ? ` Also on NOW Cinema.` : "") + `</p>`;
+}
 function filmSheetHTML(f) {
   const e = eff(f.id), a = avail(f), done = isDone(e);
   const offers = [];
-  a.own.forEach(o => offers.push(`<li><a class="own" href="${esc(o[1] || jwLink(f))}" target="_blank" rel="noopener noreferrer">${esc(svcName(o[0]))}</a><small>${o[2] ? "until " + esc(shortDate(o[2])) : "yours"}</small></li>`));
+  a.own.forEach(o => offers.push(`<li><a class="own" href="${esc(o[1] || jwLink(f))}" target="_blank" rel="noopener noreferrer">${esc(ownName(o[0]))}</a><small>${o[2] ? "until " + esc(shortDate(o[2])) : "yours"}</small></li>`));
   a.free.forEach(o => offers.push(`<li><a href="${esc(o[1] || jwLink(f))}" target="_blank" rel="noopener noreferrer">${esc(svcName(o[0]))}</a><small>free${o[0] === "bbc" ? ", TV licence" : ""}${o[2] ? " until " + esc(shortDate(o[2])) : ""}</small></li>`));
   a.other.forEach(o => {
-    const s = SVC[o[0]], extra = o[0].startsWith("ch:") ? "Prime Video channel" : s && s.p ? `£${s.p.toFixed(2)} a month` : isFree(o[0]) ? "free" : "subscription";
+    const c = svcCost(o[0]), extra = o[0].startsWith("ch:") ? "Prime Video channel" : c.p ? `£${c.p.toFixed(2)} a month${o[0] === "hbos" ? (owns("hbo") ? " upgrade" : ", Standard with Ads") : ""}` : isFree(o[0]) ? "free" : "subscription";
     offers.push(`<li><a href="${esc(o[1] || jwLink(f))}" target="_blank" rel="noopener noreferrer">${esc(svcName(o[0]))}</a><small>${esc(extra)}</small></li>`);
   });
   if (f.rent) offers.push(`<li>${f.rent[2] ? `<a href="${esc(f.rent[2])}" target="_blank" rel="noopener noreferrer">Rent on ${esc(f.rent[1] || "store")}</a>` : "Rent"}<small>£${f.rent[0].toFixed(2)}</small></li>`);
@@ -672,7 +714,7 @@ function filmSheetHTML(f) {
       ${typeof shareBtnHTML === "function" ? shareBtnHTML(f) : ""}</div>
     ${f.w ? `<p class="fs-pitch">${esc(f.w)}</p>` : ""}
     ${f.d ? `<h4>Synopsis</h4><p>${esc(f.d)}</p>` : !f.w ? `<h4>Synopsis</h4><p class="hint">No synopsis saved for this one.</p>` : ""}
-    <h4>Where to watch in the UK</h4><ul class="offers">${offers.join("")}</ul>
+    <h4>Where to watch in the UK</h4><ul class="offers">${offers.join("")}</ul>${newestNoteHTML(f, a)}
     ${done ? "" : `<h4>Why ${f._m}%</h4>${why ? `<p class="why">${why}</p>` : ""}
       <div class="calc"><span>Taste fit</span><b>${pct(f._fit)}</b><span>Similar films you rated</span><b>${pct(f._nb)}</b><span>Critics</span><b>${pct(f._q)}</b><span>Score</span><b>${pct(f._T)}</b></div>`}
     <h4>Tags</h4><div class="tagrow">${tags || '<span class="hint">None yet</span>'}</div>
@@ -742,12 +784,11 @@ function renderTonight() {
 }
 function renderStrips() {
   const c = FILMS.filter(f => isCandidate(f) && passes(f, {basic: true}));
-  const fresh = c.filter(f => f.nw && daysUntil(f.nw[0]) >= -NEW_DAYS && (cfg.svc[f.nw[1]] || (cfg.free && isFree(f.nw[1]))) && (f.o || []).some(o => o[0] === f.nw[1]))
-    .sort(SORTS.match).slice(0, 8);
+  const fresh = c.filter(isNewForYou).sort(SORTS.match).slice(0, 8);
   const leaving = c.map(f => [f, avail(f).leave]).filter(([, l]) => l && daysUntil(l) <= SOON_DAYS).sort((x, y) => y[0]._T - x[0]._T).slice(0, 8);
   const li = (f, when, soon) => `<li><button type="button" data-act="openid" data-id2="${esc(f.id)}" aria-haspopup="dialog">${posterHTML(f, "", 56, 84)}<span class="mm ${matchClass(f._m)}">${f._m}%</span><span class="st">${esc(f.t)}<small>${esc(f.y || "")}</small></span><span class="when${soon ? " soon" : ""}">${esc(when)}</span></button></li>`;
   $("strips").innerHTML = `<section class="strip"><h2>New on your services</h2><p class="sub">Added in the last two weeks</p>
-      ${fresh.length ? `<ol>${fresh.map(f => li(f, `${svcName(f.nw[1])}, ${shortDate(f.nw[0])}`)).join("")}</ol>` : `<p class="empty">Nothing new that fits you this fortnight.</p>`}</section>
+      ${fresh.length ? `<ol>${fresh.map(f => li(f, `${ownName(f.nw[1])}, ${shortDate(f.nw[0])}`)).join("")}</ol>` : `<p class="empty">Nothing new that fits you this fortnight.</p>`}</section>
     <section class="strip"><h2>Leaving soon</h2><p class="sub">Last chance on your services</p>
       ${leaving.length ? `<ol>${leaving.map(([f, l]) => li(f, `Leaves ${shortDate(l)}`, daysUntil(l) <= 7)).join("")}</ol>` : `<p class="empty">Nothing you’d want is leaving this month.</p>`}</section>`;
 }
@@ -759,18 +800,27 @@ const LEN_OPTS = [["any", "Any length"], ["100", "Under 100 min"]];
 const LANG_OPTS = [["0", "Any language"], ["1", "English only"]];
 const SORT_OPTS = [["match", "Best match"], ["imdb", "IMDb score"], ["rt", "RT score"], ["new", "Newest"], ["short", "Shortest"], ["leaving", "Leaving soon"]];
 const RSORT_OPTS = [["recent", "Recently rated"], ["high", "Highest first"], ["low", "Lowest first"], ["az", "A–Z"], ["year", "Newest film"]];
-/* Service tokens: Watch tonight, each service you pay for (NOW and HBO Max as one), Free and Rent. */
+/* Service tokens: Watch tonight, each service you pay for (NOW and HBO Max as one, and HBO Max's plans as one), Free
+   and Rent. */
 function svcTokens() {
-  const own = OWNABLE.filter(k => cfg.svc[k]), both = own.includes("hbo") && own.includes("nowe");
+  const own = OWNABLE.filter(owns), now = own.includes("nowe"), std = own.includes("hbos");
+  const hbo = std ? "hbo|hbos" : "hbo", plan = std ? "with the newest films" : "Basic with Ads";
   const toks = [["tonight", "Watch tonight", "On the services you pay for, or free"]];
   own.forEach(k => {
-    if (both && k === "nowe") return;
-    toks.push(both && k === "hbo" ? ["hbo|nowe", "NOW & HBO Max", "NOW Entertainment, which includes HBO Max"] : [k, SVC[k].n, "Yours"]);
+    if (k === "hbos" || (now && k === "nowe" && own.includes("hbo"))) return;
+    toks.push(k === "hbo" ? (now ? [hbo + "|nowe", "NOW & HBO Max", `NOW Entertainment, and HBO Max ${plan}`] : [hbo, "HBO Max", std ? "Every film on it" : "Basic with Ads"])
+      : [k, SVC[k].n, "Yours"]);
   });
   toks.push(["free", "Free", "BBC iPlayer, Channel 4, ITVX, My5, Tubi and more"], ["rent", "Rent", "Not on your services, but rentable"]);
   return toks;
 }
-const tokName = k => k === "subs" ? "Other subscriptions" : k === "tonight" ? "Watch tonight" : k === "free" ? "Free" : k === "rent" ? "Rent" : k.split("|").map(svcName).join(" & ");
+function tokName(k) {
+  if (k === "subs") return "Other subscriptions";
+  const mine = svcTokens().find(t => t[0] === k);
+  if (mine) return mine[1];
+  const keys = k.split("|");
+  return [...new Set(keys.map(x => x === "hbos" && keys.includes("hbo") ? SVC.hbo.n : svcName(x)))].join(" & ");
+}
 /* Every other service in the pool, most films first, to add to the filter. */
 function moreSvcHTML(fixedKeys) {
   const n = new Map();
@@ -951,7 +1001,7 @@ function planner() {
     }
     let best = null;
     for (const [k, fs] of by) {
-      const value = fs.reduce((s, f) => s + f._m / 100, 0), price = (SVC[k] && SVC[k].p) || (k.startsWith("ch:") ? 5 : 7);
+      const value = fs.reduce((s, f) => s + f._m / 100, 0), price = svcCost(k).p || (k.startsWith("ch:") ? 5 : 7);
       const score = value / price;
       if (fs.length >= 3 && (!best || score > best.score)) best = {k, fs, value, price, score};
     }
@@ -982,11 +1032,11 @@ function renderTaste() {
     </div>
     <section class="taste-plan"><h2>Rotate in this month</h2><p class="sub">Your best unseen matches that aren’t on your services, and the cheapest single subscription that unlocks most of them. Cancel after a month, then rotate.</p>
       ${plan.length ? `<ol class="plan">${plan.map(p => {
-        const s = SVC[p.k] || {};
+        const s = svcCost(p.k);
         return `<li><h3>${esc(svcName(p.k))}<span>${s.p ? `£${s.p.toFixed(2)} a month` : p.k.startsWith("ch:") ? "Prime Video channel" : ""}${s.note ? `, ${esc(s.note)}` : ""}</span></h3>
           <p>${p.fs.length} of your top unseen matches, average ${Math.round(p.fs.reduce((x, f) => x + f._m, 0) / p.fs.length)}%: <span class="films">${p.fs.slice(0, 6).map(f => esc(f.t)).join(", ")}${p.fs.length > 6 ? "…" : ""}</span></p></li>`;
       }).join("")}</ol>` : `<p class="hint">Everything you’d want is already on your services or free.</p>`}
-      <p class="sub">Prices checked October 2026.</p></section>
+      <p class="sub">Prices checked November 2026.</p></section>
     <div class="how">
       <p><b>How the recommendations work.</b> Every film is a bag of features: subgenre tags (hand-picked, from Wikidata and from the synopsis), director, decade, where it’s from, whether it’s subtitled, gore level and length. Each button you press is a signal: scores run from −2.5 for a 1 (Hated) through −0.5 for a 5 (Meh) and +1 for a 7 (Liked) to +2.5 for a 10 (Favourite); Want is +0.6 and Pass −1. Your affinity for a feature is the average signal across films that have it, pulled toward zero until there’s enough evidence.</p>
       <p>A film’s score adds up its feature affinities, a boost when JustWatch lists it as similar to something you rated, and a small nudge from IMDb and Rotten Tomatoes. Every seventh slot is a wildcard: a well-reviewed film built from features you haven’t rated yet, so the model keeps learning instead of narrowing.</p>
@@ -1282,10 +1332,7 @@ function applyTheme() {
 function fillSettings() {
   // Built once, then only ticked and unticked, so a switch keeps its focus and animation as you use it.
   if (!$("svcChecks").children.length) {
-    $("svcChecks").innerHTML = OWNABLE.map(k => {
-      const s = SVC[k];
-      return `<label class="sw"><span>${esc(s.n)}${k === "hbo" ? ` <small>comes with NOW Entertainment</small>` : s.p ? ` <small>£${s.p.toFixed(2)} a month</small>` : ""}</span><input type="checkbox" class="tog" data-svc="${k}"></label>`;
-    }).join("");
+    $("svcChecks").innerHTML = OWNABLE.map(k => `<label class="sw${k === "hbos" ? " sub" : ""}"><span>${svcLabelHTML(k, true)}</span><input type="checkbox" class="tog" data-svc="${k}"></label>`).join("");
     $("flagChecks").innerHTML = Object.entries(FLAGS).map(([k, l]) => `<label class="sw"><span>${esc(l)}</span><input type="checkbox" class="tog" data-flag="${k}"></label>`).join("");
   }
   document.querySelectorAll("#svcChecks [data-svc]").forEach(i => { i.checked = !!cfg.svc[i.dataset.svc]; });
@@ -1293,7 +1340,8 @@ function fillSettings() {
   $("cfgFree").checked = !!cfg.free;
   $("cfgEn").checked = !!cfg.en;
   document.querySelectorAll("[data-theme-set]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.themeSet === cfg.theme)));
-  const nSvc = OWNABLE.filter(k => cfg.svc[k]).length, nHide = Object.values(cfg.hide).filter(Boolean).length;
+  // HBO Max Standard is a plan of HBO Max, not another service.
+  const nSvc = OWNABLE.filter(k => owns(k) && k !== "hbos").length, nHide = Object.values(cfg.hide).filter(Boolean).length;
   const sum = {
     account: acct.user ? "@" + acct.user.handle : acct.server === false ? "This browser only" : "Not signed in",
     services: nSvc ? `${plural(nSvc, "service")}${cfg.free ? " + free TV" : ""}` : cfg.free ? "Free TV only" : "None picked",
@@ -1336,7 +1384,7 @@ function wireSettings() {
   window.addEventListener("resize", () => { if (d.open && wide() && !setPane) showPane("account"); else if (d.open) $("set-h").textContent = setPane && !wide() ? PANES[setPane] : "Settings"; });
   d.addEventListener("change", e => {
     const t = e.target;
-    if (t.dataset.svc) setCfg({svc: Object.assign({}, cfg.svc, {[t.dataset.svc]: t.checked ? 1 : 0})});
+    if (t.dataset.svc) setCfg(svcPatch(t.dataset.svc, t.checked));
     else if (t.dataset.flag) setCfg({hide: Object.assign({}, cfg.hide, {[t.dataset.flag]: t.checked ? 1 : 0})});
     else if (t.id === "cfgFree") setCfg({free: t.checked ? 1 : 0});
     else if (t.id === "cfgEn") setCfg({en: t.checked ? 1 : 0}, true);

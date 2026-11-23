@@ -77,7 +77,17 @@ function serviceKey(name, kind) {
   if (!base) return null;
   return kind === "flatrate" ? "ch:" + base.slice(0, 60) : "free:" + base.slice(0, 60);
 }
-function offersFrom(providers) {
+/* HBO Max's Basic with Ads plan (the one NOW Entertainment & HBO Max and Sky include) leaves out films that first stream
+   on HBO Max after their cinema run; those need Standard with Ads or above. TMDB calls both "HBO Max", so, as in
+   refresh.py, a film still within NEWEST_DAYS of its release counts as one of the newest ("hbos"). TMDB doesn't say
+   when the HBO Max window opened, so today stands in until the nightly rebuild has JustWatch's dates. */
+const HBO_UK_LAUNCH = Date.UTC(2026, 2, 26), NEWEST_DAYS = 500;
+function hboPlan(releaseDate) {
+  const released = typeof releaseDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(releaseDate) ? Date.parse(releaseDate + "T00:00:00Z") : NaN;
+  if (!isFinite(released)) return "hbo";
+  return (Math.max(Date.now(), HBO_UK_LAUNCH) - released) / 864e5 <= NEWEST_DAYS ? "hbos" : "hbo";
+}
+function offersFrom(providers, releaseDate) {
   const gb = providers && providers.results && providers.results.GB;
   const out = [], seen = new Set();
   for (const kind of ["flatrate", "free", "ads"]) {
@@ -86,7 +96,10 @@ function offersFrom(providers) {
       if (key && !seen.has(key)) { seen.add(key); out.push([key, "", null]); }
     }
   }
-  return out.slice(0, 12);
+  // A Sky Cinema film is only on NOW with a Cinema membership, even when it's also filed under NOW Entertainment.
+  const keep = seen.has("nowc") ? out.filter(o => o[0] !== "nowe") : out;
+  const plan = seen.has("hbo") ? hboPlan(releaseDate) : "hbo";
+  return keep.map(o => o[0] === "hbo" ? [plan, "", null] : o).slice(0, 12);
 }
 /* Subgenre tags and content flags from the synopsis and TMDB's keywords: the same rules refresh.py applies. */
 const TAG_RULES = [
@@ -129,7 +142,7 @@ function filmRecord(m) {
     ce: cert, co: (m.production_countries || []).map(c => c.iso_3166_1).filter(c => /^[A-Z]{2}$/.test(c)).slice(0, 3),
     dir: (((m.credits || {}).crew) || []).filter(c => c.job === "Director").map(c => String(c.name).slice(0, 100)).slice(0, 2),
     imdb: ((m.external_ids || {}).imdb_id) || m.imdb_id || undefined,
-    ta: [...tags].sort(), fl: [...flags].sort(), g, ge: 1, o: offersFrom(m["watch/providers"]),
+    ta: [...tags].sort(), fl: [...flags].sort(), g, ge: 1, o: offersFrom(m["watch/providers"], m.release_date),
     tp: typeof m.poster_path === "string" && IMG_FILE.test(m.poster_path.slice(1)) ? m.poster_path : undefined,
     h: genres.includes(HORROR) ? 1 : 0
   };

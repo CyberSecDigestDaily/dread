@@ -97,7 +97,7 @@ const uniq = Math.random().toString(36).slice(2, 7);
     "BAD ID": {t: t0, s: 5},
     "tm1003": {t: "not a date", s: 5},
     "tm1004": {t: iso(86400 * 30), s: 4}
-  }, cfg: {svc: {nf: 1, pv: 1, evil: 1}, free: 1, hide: {spiders: 1}, theme: "dark", share: 1, en: 0, t: t0}});
+  }, cfg: {svc: {nf: 1, pv: 1, hbo: 1, hbos: 1, evil: 1}, free: 1, hide: {spiders: 1}, theme: "dark", share: 1, en: 0, t: t0}});
   ok(r.status === 200 && r.data.rev >= 1, "push returns a revision", r.data);
   const films = r.data.films;
   ok(films["lake-mungo-2008"] && films["lake-mungo-2008"].s === 9 && films["lake-mungo-2008"].r === "loved", "rating stored with its tier");
@@ -105,7 +105,7 @@ const uniq = Math.random().toString(36).slice(2, 7);
   ok(films.tm1001 && films.tm1001.w === 1 && films.tm1002 && films.tm1002.x === 1, "want and pass stored");
   ok(!films["BAD ID"] && !films.tm1003, "bad ids and timestamps are dropped");
   ok(films.tm1004 && Date.parse(films.tm1004.t) <= Date.now() + 5000, "future timestamps are pulled back to now");
-  ok(r.data.cfg && r.data.cfg.svc.nf === 1 && !r.data.cfg.svc.evil && r.data.cfg.hide.spiders === 1 && r.data.cfg.theme === "dark", "settings stored and cleaned", r.data.cfg);
+  ok(r.data.cfg && r.data.cfg.svc.nf === 1 && r.data.cfg.svc.hbo === 1 && r.data.cfg.svc.hbos === 1 && !r.data.cfg.svc.evil && r.data.cfg.hide.spiders === 1 && r.data.cfg.theme === "dark", "settings stored and cleaned (HBO Max Standard kept)", r.data.cfg);
   const rev1 = r.data.rev;
   r = await don.post("/api/state", {since: rev1, films: {"lake-mungo-2008": {t: iso(-3600), s: 2}}});
   ok(!r.data.films["lake-mungo-2008"], "an older change loses (last writer wins)");
@@ -306,6 +306,10 @@ const uniq = Math.random().toString(36).slice(2, 7);
     ok(film.ta.includes("grief") && film.ta.includes("creature"), "tags come from the synopsis and keywords", film.ta);
     r2 = await anon.get("/api/find/777");
     ok(r2.data.film.lg === "es" && r2.data.film.g === "H" && r2.data.film.ot === "Cinta de Medianoche", "language, original title and a gore estimate", r2.data.film);
+    r2 = await anon.get("/api/find/910");
+    ok(JSON.stringify(r2.data.film.o) === JSON.stringify([["hbos", "", null], ["nowc", "", null]]), "a film fresh from cinemas is HBO Max Standard, and NOW Cinema only", r2.data.film.o);
+    r2 = await anon.get("/api/find/911");
+    ok(JSON.stringify(r2.data.film.o) === JSON.stringify([["hbo", "", null], ["nowe", "", null]]), "an older film is in every HBO Max plan, and on NOW Entertainment", r2.data.film.o);
     ok((await anon.get("/api/find/abc")).status === 404 && (await anon.get("/api/find/999999")).status === 404, "unknown films are 404s");
     ok((await anon.post("/api/find/501", {}, {headers: {Origin: null}})).status === 403, "counting an add needs our Origin");
     ok((await anon.post("/api/find/501", {})).status === 200 && (await donPhone.post("/api/find/501", {})).status === 200 && (await anon.post("/api/find/888", {})).status === 200, "adds are counted, signed in or not");
@@ -321,6 +325,8 @@ const uniq = Math.random().toString(36).slice(2, 7);
     r2 = await pho.post("/api/state", {since: 0, films: {"tmdb-501": {t: T, w: 1, f: Object.assign({}, film, {o: [["sh", "https://evil.example/", "2030-01-01"], ["<script>", "", null], ["ch:Arrow Video", "", null]], tp: "/../x.jpg", h: 1, x: "junk"})}}});
     const synced = r2.data.films["tmdb-501"];
     ok(synced && synced.w === 1 && synced.f.tm === 501 && JSON.stringify(synced.f.o) === JSON.stringify([["sh", "", null], ["ch:Arrow Video", "", null]]) && !synced.f.tp && !("h" in synced.f) && !("x" in synced.f), "a TMDB snapshot syncs, cleaned", synced);
+    r2 = await pho.post("/api/state", {since: 0, films: {"tmdb-910": {t: T, w: 1, f: {t: "The Vanishing Class", y: 2026, tm: 910, o: [["hbos", "", null], ["nowc", "", null]]}}}});
+    ok(JSON.stringify(r2.data.films["tmdb-910"].f.o) === JSON.stringify([["hbos", "", null], ["nowc", "", null]]), "HBO Max Standard survives sync", r2.data.films["tmdb-910"]);
     r2 = await pho.post("/api/state", {since: 0, films: {"tm4040": {t: T, w: 1, f: {t: "Pool film", y: 2020, o: [["nf", "", null]], tp: "/abcdefgh.jpg"}}}});
     ok(r2.data.films.tm4040 && !r2.data.films.tm4040.f.o && !r2.data.films.tm4040.f.tp, "pool films' copies don't carry services or TMDB posters", r2.data.films.tm4040);
   }

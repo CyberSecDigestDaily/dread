@@ -432,8 +432,58 @@ async def main():
         man = await m["page"].evaluate("fetch('/manifest.webmanifest').then(r => r.json())")
         check(man.get("display") == "standalone" and len(man.get("icons", [])) == 3, "a web app manifest for the Home Screen", man)
 
+        print("\nHBO Max plans (NOW Entertainment & HBO Max gives Basic with Ads)")
+        hb = await person(browser, "hbo")
+        hp = hb["page"]
+        await hp.goto(BASE + "/about")
+        await hp.evaluate("""() => {
+            localStorage.setItem('dread.welcomed.v1', '1'); localStorage.setItem('dread.onboarded.v1', '1');
+            localStorage.setItem('dread.state.v1', JSON.stringify({v: 3, films: {}, cfg: {svc: {nf: 1, pv: 1, dp: 1, hbo: 1, nowe: 1, cr: 1},
+              free: 1, hide: {}, theme: 'dark', share: 0, en: 0, t: ''}}));
+        }""")
+        await hp.goto(BASE + "/#for")
+        await hp.wait_for_selector("#listFor .film")
+        # A film only on HBO Max Standard (and maybe NOW Cinema or to rent), and one in every HBO Max plan and nowhere else you have.
+        ids = await hp.evaluate("""() => {
+            const only = (f, k) => (f.o || []).some(o => o[0] === k) && !(f.o || []).some(o => o[0] !== k && o[0] !== 'nowc' && (owns(o[0]) || isFree(o[0])));
+            const n = FILMS.find(f => !f.gone && only(f, 'hbos')), b = FILMS.find(f => !f.gone && only(f, 'hbo') && /hbomax\\.com/.test((f.o.find(o => o[0] === 'hbo') || [])[1] || ''));
+            return {n: n && n.id, b: b && b.id, nT: n && n.t, bT: b && b.t};
+        }""")
+        check(ids["n"] and ids["b"], "the pool has HBO Max Standard films and HBO Max films", ids)
+        if ids["n"] and ids["b"]:
+            w = await hp.evaluate("id => { const f = BY.get(id); return watchHTML(f, avail(f)); }", ids["n"])
+            check("Watch on" not in w and "mine" not in w, f"{ids['nT']} isn't yours on Basic with Ads", w)
+            w = await hp.evaluate("id => { const f = BY.get(id); return watchHTML(f, avail(f)); }", ids["b"])
+            check("Watch on HBO Max" in w and "hbomax.com" in w, f"{ids['bT']} is, with an HBO Max app link", w)
+            await hp.evaluate("id => openFilm(id)", ids["n"])
+            await hp.wait_for_selector("#filmDlg[open] .offers")
+            sheet = await hp.locator("#fdBody").inner_text()
+            check("HBO Max Standard" in sheet and "£1.00 a month upgrade" in sheet and "isn’t in HBO Max Basic with Ads" in sheet, "the sheet names HBO Max Standard, the £1 upgrade and why", sheet[:600])
+            await shot(hb, "14-hbo-standard-sheet")
+            await hp.click("#closeFilm")
+            await hp.evaluate("openSettings('services')")
+            await hp.wait_for_selector('.set-pane[data-pane="services"]:not([hidden]) [data-svc="hbos"]')
+            check(not await hp.is_checked('[data-svc="hbos"]') and await hp.is_checked('[data-svc="hbo"]'), "Settings: HBO Max on, HBO Max Standard off")
+            await shot(hb, "15-hbo-settings")
+            await hp.check('[data-svc="hbos"]')
+            w = await hp.evaluate("id => { const f = BY.get(id); return watchHTML(f, avail(f)); }", ids["n"])
+            check("Watch on HBO Max" in w, "with Standard switched on it's yours, as HBO Max", w)
+            await hp.uncheck('[data-svc="hbo"]')
+            check(not await hp.is_checked('[data-svc="hbos"]'), "switching HBO Max off takes Standard with it")
+            await hp.check('[data-svc="hbo"]')
+            await hp.click("#closeSettings")
+            toks = await hp.evaluate("svcTokens().map(t => t[0] + '=' + t[1])")
+            check("hbo|nowe=NOW & HBO Max" in toks, "NOW and HBO Max share one filter", toks)
+            await hp.click('[data-sheet="where"]')
+            await hp.wait_for_selector("#sheet[open] #svcMore")
+            more = await hp.locator("#svcMore").inner_text()
+            check("HBO Max Standard" in more, "HBO Max Standard can be added to the filter", more[:300])
+            await hp.click("#sheet [data-close]")
+            cost = await hp.evaluate("svcCost('hbos').p")
+            check(cost == 1, "for Basic customers, Standard costs a £1 upgrade", cost)
+
         print("\nConsole")
-        for p in (new, don, tv, pho, app, m):
+        for p in (new, don, tv, pho, app, m, hb):
             errs = [e for e in p["errors"] if "favicon" not in e and "Failed to load resource" not in e]
             check(not errs, f"no console errors for {p['name']}", errs)
         await browser.close()

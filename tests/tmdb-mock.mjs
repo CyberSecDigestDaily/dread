@@ -21,7 +21,20 @@ const FILMS = {
   888: {id: 888, title: "Paddington", original_title: "Paddington", release_date: "2014-11-28", original_language: "en", runtime: 95,
     overview: "A young bear travels to London.", poster_path: "/pppppppBear.jpg", genres: [{id: 10751, name: "Family"}],
     production_countries: [{iso_3166_1: "GB"}], external_ids: {imdb_id: "tt1109624"}, credits: {crew: [{job: "Director", name: "Paul King"}]},
-    release_dates: {results: [{iso_3166_1: "GB", release_dates: [{certification: "PG"}]}]}, keywords: {keywords: []}, "watch/providers": {results: {}}}
+    release_dates: {results: [{iso_3166_1: "GB", release_dates: [{certification: "PG"}]}]}, keywords: {keywords: []}, "watch/providers": {results: {}}},
+  // Fresh out of cinemas (four months ago): on HBO Max, its Amazon channel and NOW Cinema, and filed under NOW too.
+  910: {id: 910, title: "The Vanishing Class", original_title: "The Vanishing Class", original_language: "en", runtime: 128,
+    release_date: new Date(Date.now() - 120 * 864e5).toISOString().slice(0, 10),
+    overview: "Every child in one class runs into the night at the same minute.", poster_path: "/vvvvvvClass.jpg", genres: [{id: 27, name: "Horror"}],
+    production_countries: [{iso_3166_1: "US"}], external_ids: {imdb_id: "tt99999910"}, credits: {crew: [{job: "Director", name: "Zed Test"}]},
+    release_dates: {results: [{iso_3166_1: "GB", release_dates: [{certification: "18"}]}]}, keywords: {keywords: []},
+    "watch/providers": {results: {GB: {flatrate: [{provider_name: "HBO Max"}, {provider_name: "HBO Max Amazon Channel"}, {provider_name: "Now TV Cinema"}, {provider_name: "Now TV"}]}}}},
+  // Years old: in every HBO Max plan, and on NOW Entertainment.
+  911: {id: 911, title: "Old Doctor Dream", original_title: "Old Doctor Dream", release_date: "2019-10-30", original_language: "en", runtime: 152,
+    overview: "A grown-up boy with a gift faces a cult that feeds on it.", poster_path: "/oooooooDream.jpg", genres: [{id: 27, name: "Horror"}],
+    production_countries: [{iso_3166_1: "US"}], external_ids: {imdb_id: "tt99999911"}, credits: {crew: [{job: "Director", name: "Mike Test"}]},
+    release_dates: {results: [{iso_3166_1: "GB", release_dates: [{certification: "15"}]}]}, keywords: {keywords: []},
+    "watch/providers": {results: {GB: {flatrate: [{provider_name: "HBO Max"}, {provider_name: "Now TV"}]}}}}
 };
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
 let calls = 0;

@@ -42,11 +42,11 @@ HINTS_URL = "https://dreadlist.co.uk/api/hints"
 ADDED_URL = "https://dreadlist.co.uk/api/added"
 TASTE_URL = "https://raw.githubusercontent.com/CyberSecDigestDaily/dread-sync/main/state.json"
 
-CONTENT = """content(country: GB, language: "en") { title originalTitle originalReleaseYear fullPath shortDescription runtime
-  ageCertification posterUrl productionCountries genres { shortName } credits(role: DIRECTOR) { name }
+CONTENT = """content(country: GB, language: "en") { title originalTitle originalReleaseYear originalReleaseDate fullPath
+  shortDescription runtime ageCertification posterUrl productionCountries genres { shortName } credits(role: DIRECTOR) { name }
   externalIds { imdbId } scoring { imdbScore imdbVotes tomatoMeter tmdbPopularity } }
 offers(country: GB, platform: WEB, filter: { bestOnly: true }) { monetizationType retailPriceValue currency
-  standardWebURL availableToTime package { shortName clearName } }"""
+  standardWebURL availableFromTime availableToTime dateCreated package { shortName clearName } }"""
 # objectType has to sit inside the fragment: JustWatch rejects it on a bare node(id:) lookup.
 FIELDS = "id ... on MovieOrShow { objectType " + CONTENT + " }"
 
@@ -72,6 +72,15 @@ SERVICES = [
     (r"^amazon mx player", "mx"), (r"^(5|my5|channel 5)$", "my5"), (r"^justwatch", None),
 ]
 FREE_KEYS = {"tubi", "c4", "bbc", "itvx", "pluto", "plex", "ytf", "rakuten", "mx", "my5"}
+# HBO Max's Basic with Ads plan, the one NOW Entertainment & HBO Max and Sky TV include, leaves out "films that first
+# stream on HBO Max following their cinema release window" (Weapons, Sinners and the like): those need Standard with
+# Ads or above, or the £1 upgrade for people on Basic. JustWatch lists both as plain HBO Max, so a film whose HBO Max
+# window opened within NEWEST_DAYS of its release is filed as "hbos" (HBO Max Standard), and everything else as "hbo".
+# First windows open 2 to 15 months after release; library films arrive years later.
+HBO_UK_LAUNCH = dt.date(2026, 3, 26)
+NEWEST_DAYS = 500
+# By IMDb id, where that rule gets a film wrong: "hbo" (in Basic with Ads) or "hbos" (Standard with Ads and above only).
+HBO_PLAN_FIX = {}
 STORES = [(r"^amazon", "Amazon"), (r"^apple", "Apple TV"), (r"^sky store", "Sky Store"), (r"^rakuten", "Rakuten"),
           (r"^google", "Google Play"), (r"^microsoft", "Microsoft"), (r"^youtube", "YouTube"), (r"^chili", "Chili")]
 
@@ -356,8 +365,40 @@ def store_name(name):
     return name.strip()
 
 
+def day_of(value):
+    try:
+        return dt.date.fromisoformat(str(value)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def release_day(c):
+    """When a film came out: JustWatch's original release date, else the middle of its release year."""
+    year = c.get("originalReleaseYear")
+    return day_of(c.get("originalReleaseDate")) or (dt.date(year, 7, 1) if isinstance(year, int) and year > 1800 else None)
+
+
+def hbo_plan(c, starts):
+    """"hbos" when the film's HBO Max window opened while it was one of the newest films (Standard with Ads and above
+    only), else "hbo" (every plan, Basic with Ads included). starts: when its HBO Max offers began, as JustWatch has it."""
+    fix = HBO_PLAN_FIX.get((c.get("externalIds") or {}).get("imdbId") or "")
+    if fix in ("hbo", "hbos"):
+        return fix
+    released = release_day(c)
+    if not released:
+        return "hbo"
+    opened = max(min(starts) if starts else TODAY, HBO_UK_LAUNCH)
+    return "hbos" if (opened - released).days <= NEWEST_DAYS else "hbo"
+
+
+def now_title(url):
+    """A NOW link without its query: the same title page whichever membership JustWatch filed it under."""
+    return re.sub(r"[?#].*$", "", url or "").rstrip("/").lower()
+
+
 def offers(node):
     streams, rent, buy, cinema = {}, None, None, False
+    channel_link, hbo_starts = {}, []
     horizon = TODAY + dt.timedelta(days=365)
     for o in node.get("offers") or []:
         kind, pkg = o.get("monetizationType"), (o.get("package") or {}).get("clearName") or ""
@@ -381,22 +422,39 @@ def offers(node):
                 continue
             if kind != "FLATRATE" and key not in FREE_KEYS and key != "pv":
                 key = "free:" + pkg.strip()
+            if key == "hbo":
+                # When this offer's window opened: its start date, else when JustWatch first saw it. Dates before 2020
+                # are JustWatch placeholders (2000-07-14); licence dates before the UK launch count from the launch.
+                for when in (o.get("availableFromTime"), o.get("dateCreated")):
+                    began = day_of(when)
+                    if began and began.year >= 2020:
+                        hbo_starts.append(began)
+                        break
             leave = None
             if o.get("availableToTime"):
-                try:
-                    d = dt.date.fromisoformat(o["availableToTime"][:10])
-                    leave = d.isoformat() if TODAY <= d <= horizon else None
-                except ValueError:
-                    leave = None
+                d = day_of(o["availableToTime"])
+                leave = d.isoformat() if d and TODAY <= d <= horizon else None
+            # The service's own app before its Amazon channel: people who get HBO Max with NOW or Sky watch in the HBO
+            # Max app, and an Amazon link would only offer them a second subscription. (Channels with no app of their
+            # own, "ch:" keys, keep JustWatch's first link: the page calls them Prime Video channels.)
+            via_channel = known and pkg.lower().strip().endswith("amazon channel")
             prev = streams.get(key)
             if prev is None:
                 streams[key] = [key, url, leave]
+                channel_link[key] = via_channel
             else:
-                if not prev[1] and url:
-                    prev[1] = url
+                if url and (not prev[1] or (channel_link.get(key) and not via_channel)):
+                    prev[1], channel_link[key] = url, via_channel
                 if prev[2] and (leave is None or leave > prev[2]):
                     prev[2] = leave
-    return list(streams.values()), rent, buy, cinema
+    # JustWatch sometimes files a Sky Cinema film under NOW Entertainment too, with the same NOW link. NOW only plays
+    # those with a Cinema membership, so the Entertainment copy goes.
+    if "nowc" in streams and "nowe" in streams:
+        if not streams["nowe"][1] or now_title(streams["nowe"][1]) == now_title(streams["nowc"][1]):
+            del streams["nowe"]
+    plan = hbo_plan(node.get("content") or {}, hbo_starts) if "hbo" in streams else None
+    out = [[plan if k == "hbo" else k, *rest] for k, *rest in streams.values()]
+    return out, rent, buy, cinema
 
 
 def tags_for(node, wd_text, strong):
@@ -789,6 +847,11 @@ def main():
         if jid in arrivals:
             day, _, pkg = arrivals[jid]
             key, _ = service_key(pkg)
+            have = {o[0] for o in f.get("o") or []}
+            if key == "hbo" and key not in have and "hbos" in have:
+                key = "hbos"  # new on HBO Max, as one of the newest films
+            if key == "nowe" and key not in have:
+                key = "nowc" if "nowc" in have else None  # a Sky Cinema film JustWatch also filed under Entertainment
             if key:
                 f["nw"] = [day, key]
         if not f["sim"]:

@@ -27,7 +27,7 @@ function renderWelcome() {
       <li><b>Watch together</b><span>Shared lists rank films for everyone on them, so nobody gets stuck with a film they’ll hate.</span></li>
     </ol>
     ${picks.length ? `<section class="strip wel-peek"><h2>Streaming tonight</h2><p class="sub">A few hand-picked favourites, on UK services right now</p>
-      <ol>${picks.map(f => `<li><button type="button" data-act="openid" data-id2="${esc(f.id)}" aria-haspopup="dialog">${posterHTML(f, "", 56, 84)}<span class="st">${esc(f.t)}<small>${esc(f.y || "")}</small></span><span class="when">${esc(svcName((avail(f).own[0] || avail(f).free[0] || [""])[0]))}</span></button></li>`).join("")}</ol></section>` : ""}
+      <ol>${picks.map(f => `<li><button type="button" data-act="openid" data-id2="${esc(f.id)}" aria-haspopup="dialog">${posterHTML(f, "", 56, 84)}<span class="st">${esc(f.t)}<small>${esc(f.y || "")}</small></span><span class="when">${esc(ownName((avail(f).own[0] || avail(f).free[0] || [""])[0]))}</span></button></li>`).join("")}</ol></section>` : ""}
 `;
 }
 function leaveWelcome(then) {
@@ -54,7 +54,7 @@ function renderOnboarding() {
   let body = "";
   if (obStep === 0) {
     body = `<p class="ob-n">Step 1 of 3</p><p>Which streaming services do you pay for? Films on these count as <b>watch tonight</b>, and they’re the first link on every film.</p>
-      <div class="group">${OWNABLE.map(k => `<label class="sw"><span>${esc(SVC[k].n)}${k === "hbo" ? ` <small>comes with NOW Entertainment</small>` : ""}</span><input type="checkbox" class="tog" data-ob-svc="${k}"${cfg.svc[k] ? " checked" : ""}></label>`).join("")}</div>
+      <div class="group">${OWNABLE.map(k => `<label class="sw${k === "hbos" ? " sub" : ""}"><span>${svcLabelHTML(k)}</span><input type="checkbox" class="tog" data-ob-svc="${k}"${cfg.svc[k] ? " checked" : ""}></label>`).join("")}</div>
       <div class="group"><label class="sw"><span>Free TV counts too<small>BBC iPlayer, Channel 4, ITVX, My5, Tubi and more</small></span><input type="checkbox" class="tog" data-ob-free${cfg.free ? " checked" : ""}></label></div>`;
   } else if (obStep === 1) {
     const n = FILMS.filter(f => eff(f.id).s).length;
@@ -242,7 +242,11 @@ function wireExtras() {
   });
   document.addEventListener("change", e => {
     const t = e.target;
-    if (t.dataset.obSvc) setCfg({svc: Object.assign({}, cfg.svc, {[t.dataset.obSvc]: t.checked ? 1 : 0})});
+    if (t.dataset.obSvc) {
+      setCfg(svcPatch(t.dataset.obSvc, t.checked));
+      // HBO Max Standard switches HBO Max on with it, and switching HBO Max off takes Standard too.
+      document.querySelectorAll("[data-ob-svc]").forEach(i => { i.checked = !!cfg.svc[i.dataset.obSvc]; });
+    }
     else if (t.hasAttribute && t.hasAttribute("data-ob-free")) setCfg({free: t.checked ? 1 : 0});
   });
   // Ratings made in the guide update its "rated so far" line.
